@@ -102,7 +102,13 @@ async function currentUserId() {
   return data?.session?.user?.id || null;
 }
 
+// Set true the moment a sign-out begins, so any in-flight debounced save bails
+// out before it can re-write the localStorage mirror we're about to clear (or
+// fire a doomed upsert). Reset on each fresh load (i.e. a new sign-in/mount).
+let signingOut = false;
+
 async function loadState() {
+  signingOut = false;
   const uid = await currentUserId();
   if (!uid) return null;
   try {
@@ -123,16 +129,24 @@ async function loadState() {
   return readLocal(uid);
 }
 
-// Returns "remote" (saved to Supabase), "local" (mirror only — offline), or false (no user).
+// Returns "remote" (saved to Supabase), "local" (mirror only — offline),
+// "auth" (no valid session — token expired or signed out; NOT saved remotely),
+// or false (sign-out in progress).
 async function saveState(state) {
+  if (signingOut) return false;
   const uid = await currentUserId();
-  if (!uid) return false;
+  if (!uid) return "auth";
   writeLocal(uid, state); // always mirror locally first
   try {
     const { error } = await supabase
       .from("projector_state")
       .upsert({ user_id: uid, data: state, updated_at: new Date().toISOString() });
-    return error ? "local" : "remote";
+    if (!error) return "remote";
+    // An error could be a network blip OR an expired/invalid session. Check the
+    // session so the UI can prompt re-auth instead of falsely claiming the edit
+    // was "saved offline" when it will in fact never reach Supabase.
+    const { data } = await supabase.auth.getSession();
+    return data?.session ? "local" : "auth";
   } catch {
     return "local";
   }
@@ -141,6 +155,7 @@ async function saveState(state) {
 // Clear the offline mirror for the signed-in user before signing out, so
 // commission figures don't linger in localStorage on a shared device.
 async function signOutClearingMirror() {
+  signingOut = true; // block any in-flight debounced save from re-seeding the mirror
   try {
     const uid = await currentUserId();
     if (uid) localStorage.removeItem(LS_PREFIX + uid);
@@ -226,7 +241,9 @@ function computeCalc(accounts, settings) {
     const conf = acc.confidence == null ? 100 : Math.max(0, Math.min(100, Number(acc.confidence) || 0));
     for (const ln of acc.lines) {
       const ann = (Number(ln.profit) || 0) * (FREQ_MULT[ln.freq] || 0);
-      byType[ln.type] = (byType[ln.type] || 0) + ann;
+      // Only tally known shipment types so legacy/corrupt data can't spawn a
+      // stray key that diverges the per-type breakdown from totalGP.
+      if (byType[ln.type] != null) byType[ln.type] += ann;
       if (ln.freq === "one-off") oneOffGP += ann;
     }
     totalGP += at;
@@ -755,8 +772,8 @@ export default function CommissionProjector({ user } = {}) {
       <header className="cp-header">
         <Logo />
         <div className="cp-head-actions">
-          <span aria-live="polite" className={"cp-save " + (persisted === "remote" ? "ok" : persisted == null ? "off" : "warn")}>
-            <i className="cp-save-dot" />{persisted == null ? "Saved" : persisted === "remote" ? "Saved" : "Saved offline · will sync when back online"}
+          <span aria-live="polite" className={"cp-save " + (persisted === "remote" ? "ok" : persisted == null ? "off" : persisted === "auth" ? "err" : "warn")}>
+            <i className="cp-save-dot" />{persisted == null || persisted === "remote" ? "Saved" : persisted === "auth" ? "Session expired · sign in again to save" : "Saved offline · will sync when back online"}
           </span>
           <button className="cp-btn primary" onClick={() => setShowSettings((s) => !s)}>{showSettings ? "Close settings" : "Settings"}</button>
           <button className="cp-btn" onClick={printView}>Print</button>
@@ -777,10 +794,10 @@ export default function CommissionProjector({ user } = {}) {
       <div className="cp-titlerow">
         <h1 className="cp-title">Commission Projector</h1>
         <nav className="cp-tabs" role="tablist" aria-label="View">
-          <button role="tab" aria-selected={tab === "year"} className={tab === "year" ? "on" : ""} onClick={() => setTab("year")}>This year</button>
-          <button role="tab" aria-selected={tab === "actuals"} className={tab === "actuals" ? "on" : ""} onClick={() => setTab("actuals")}>Actuals &amp; pace</button>
-          <button role="tab" aria-selected={tab === "multi"} className={tab === "multi" ? "on" : ""} onClick={() => setTab("multi")}>Multi-year</button>
-          <button role="tab" aria-selected={tab === "scenarios"} className={tab === "scenarios" ? "on" : ""} onClick={() => setTab("scenarios")}>Scenarios</button>
+          <button role="tab" id="cp-tab-year" aria-controls="cp-panel-year" aria-selected={tab === "year"} className={tab === "year" ? "on" : ""} onClick={() => setTab("year")}>This year</button>
+          <button role="tab" id="cp-tab-actuals" aria-controls="cp-panel-actuals" aria-selected={tab === "actuals"} className={tab === "actuals" ? "on" : ""} onClick={() => setTab("actuals")}>Actuals &amp; pace</button>
+          <button role="tab" id="cp-tab-multi" aria-controls="cp-panel-multi" aria-selected={tab === "multi"} className={tab === "multi" ? "on" : ""} onClick={() => setTab("multi")}>Multi-year</button>
+          <button role="tab" id="cp-tab-scenarios" aria-controls="cp-panel-scenarios" aria-selected={tab === "scenarios"} className={tab === "scenarios" ? "on" : ""} onClick={() => setTab("scenarios")}>Scenarios</button>
         </nav>
       </div>
 
@@ -788,8 +805,8 @@ export default function CommissionProjector({ user } = {}) {
         <section className="cp-settings">
           <Field label="Base salary"><Money value={settings.base} onChange={(v) => setSettings((s) => ({ ...s, base: v }))} /></Field>
           <Field label="Car allowance"><Money value={settings.car} onChange={(v) => setSettings((s) => ({ ...s, car: v }))} /></Field>
-          <Field label="Threshold multiplier"><input className="cp-input" type="number" step="0.1" value={settings.multiplier ?? ""} onChange={(e) => setSettings((s) => ({ ...s, multiplier: e.target.value === "" ? "" : Number(e.target.value) }))} /></Field>
-          <Field label="Commission rate %"><input className="cp-input" type="number" step="0.5" value={settings.rate ?? ""} onChange={(e) => setSettings((s) => ({ ...s, rate: e.target.value === "" ? "" : Number(e.target.value) }))} /></Field>
+          <Field label="Threshold multiplier"><input className="cp-input" type="number" step="0.1" placeholder="0" value={settings.multiplier ?? ""} onChange={(e) => setSettings((s) => ({ ...s, multiplier: e.target.value === "" ? "" : Number(e.target.value) }))} /></Field>
+          <Field label="Commission rate %"><input className="cp-input" type="number" step="0.5" placeholder="0" value={settings.rate ?? ""} onChange={(e) => setSettings((s) => ({ ...s, rate: e.target.value === "" ? "" : Number(e.target.value) }))} /></Field>
           <Field label="Annual commission target"><Money value={settings.target} onChange={(v) => setSettings((s) => ({ ...s, target: v }))} /></Field>
           <Field label="Fiscal year starts">
             <select className="cp-input" value={settings.fiscalYearStart} onChange={(e) => setSettings((s) => ({ ...s, fiscalYearStart: Number(e.target.value) }))}>
@@ -817,7 +834,7 @@ export default function CommissionProjector({ user } = {}) {
 
       {/* ════════════ TAB 1 ════════════ */}
       {tab === "year" && (
-        <>
+        <div className="cp-tabpanel" role="tabpanel" id="cp-panel-year" aria-labelledby="cp-tab-year" tabIndex={-1}>
           <section className="cp-hero">
             <div className="cp-instr">
               <img className="cp-instr-mark" src={ICON_SRC} alt="" aria-hidden="true" />
@@ -949,7 +966,7 @@ export default function CommissionProjector({ user } = {}) {
                           <span className="cp-dot" style={{ background: TYPE_COLOR[ln.type] }} />
                           <select className="cp-sel type" aria-label="Freight type" value={ln.type} onChange={(e) => updateLine(acc.id, ln.id, { type: e.target.value })}>{TYPES.map((t) => <option key={t}>{t}</option>)}</select>
                           <select className="cp-sel" aria-label="Shipment frequency" value={ln.freq} onChange={(e) => updateLine(acc.id, ln.id, { freq: e.target.value })}>{FREQS.map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}</select>
-                          <div className="cp-money-in"><span>{CUR.sym}</span><input type="number" aria-label="Profit per shipment" value={ln.profit ?? ""} onChange={(e) => updateLine(acc.id, ln.id, { profit: e.target.value === "" ? "" : Number(e.target.value) })} /><em>/shpt</em></div>
+                          <div className="cp-money-in"><span>{CUR.sym}</span><input type="number" aria-label="Profit per shipment" placeholder="0" value={ln.profit ?? ""} onChange={(e) => updateLine(acc.id, ln.id, { profit: e.target.value === "" ? "" : Number(e.target.value) })} /><em>/shpt</em></div>
                           <div className="cp-line-ann">{A$(ann)}<span>/yr</span>{ln.freq === "one-off" && <i className="cp-tag">one-off</i>}</div>
                           <button className="cp-x sm" aria-label="Remove freight line" onClick={() => removeLine(acc.id, ln.id)}>×</button>
                         </div>
@@ -1022,12 +1039,12 @@ export default function CommissionProjector({ user } = {}) {
               </div>
             </aside>
           </div>
-        </>
+        </div>
       )}
 
       {/* ════════════ ACTUALS & PACE ════════════ */}
       {tab === "actuals" && (
-        <>
+        <div className="cp-tabpanel" role="tabpanel" id="cp-panel-actuals" aria-labelledby="cp-tab-actuals" tabIndex={-1}>
           {/* year switcher */}
           <div className="cp-yearsbar">
             <div className="cp-years">
@@ -1070,8 +1087,8 @@ export default function CommissionProjector({ user } = {}) {
             <div className="cp-snap-grid">
               <Field label="Base salary"><Money value={yearData.comp ? yearData.comp.base : 0} onChange={(v) => setYearComp(activeYear, { base: v })} /></Field>
               <Field label="Car allowance"><Money value={yearData.comp ? yearData.comp.car : 0} onChange={(v) => setYearComp(activeYear, { car: v })} /></Field>
-              <Field label="Threshold multiplier"><div className="cp-money-in wide"><span>×</span><input type="number" step="0.1" value={yearData.comp ? (yearData.comp.multiplier ?? "") : 0} onChange={(e) => setYearComp(activeYear, { multiplier: e.target.value === "" ? "" : Number(e.target.value) })} /></div></Field>
-              <Field label="Commission rate"><div className="cp-money-in wide"><span>%</span><input type="number" step="0.5" value={yearData.comp ? (yearData.comp.rate ?? "") : 0} onChange={(e) => setYearComp(activeYear, { rate: e.target.value === "" ? "" : Number(e.target.value) })} /></div></Field>
+              <Field label="Threshold multiplier"><div className="cp-money-in wide"><span>×</span><input type="number" step="0.1" placeholder="0" value={yearData.comp ? (yearData.comp.multiplier ?? "") : 0} onChange={(e) => setYearComp(activeYear, { multiplier: e.target.value === "" ? "" : Number(e.target.value) })} /></div></Field>
+              <Field label="Commission rate"><div className="cp-money-in wide"><span>%</span><input type="number" step="0.5" placeholder="0" value={yearData.comp ? (yearData.comp.rate ?? "") : 0} onChange={(e) => setYearComp(activeYear, { rate: e.target.value === "" ? "" : Number(e.target.value) })} /></div></Field>
             </div>
             <p className="cp-foot">Frozen at year start so history doesn't drift when you change live settings. Package {A$(yearData.pkg)} × {yearData.comp ? yearData.comp.multiplier : 0} = {A$(yearData.threshold)} threshold; commission is {yearData.comp ? yearData.comp.rate : 0}% over.</p>
           </div>
@@ -1170,12 +1187,12 @@ export default function CommissionProjector({ user } = {}) {
               <p className="cp-foot">Retention = this year's actual GP as a share of last year's — a quick read on how much business carried forward. Cumulative tallies commission earned across all tracked years.</p>
             </div>
           )}
-        </>
+        </div>
       )}
 
       {/* ════════════ TAB 2 ════════════ */}
       {tab === "multi" && (
-        <>
+        <div className="cp-tabpanel" role="tabpanel" id="cp-panel-multi" aria-labelledby="cp-tab-multi" tabIndex={-1}>
           <section className="cp-proj-controls">
             <div className="cp-sliders">
               <div className="cp-ret">
@@ -1283,12 +1300,12 @@ export default function CommissionProjector({ user } = {}) {
             </div>
             <p className="cp-foot">Year 1 = your current book{calc.oneOffGP > 0 ? ` (including ${A$(calc.oneOffGP)} of one-off wins)` : ""}. Each later year carries the prior {calc.oneOffGP > 0 ? "recurring " : ""}book forward at {proj.retention}% retention{calc.oneOffGP > 0 ? " — one-off wins don't repeat" : ""} and adds new GP{proj.newGrowth === 100 ? ` of ${A$(projection.newPY)}` : ` based on ${A$(projection.newPY)}, compounding ${proj.newGrowth}% a year from year 2`}. Threshold grows with any pay rise. Commission is {settings.rate}% on every dollar over that year's threshold. The {proj.years}-year total sums each year's commission in nominal dollars (no inflation discount).</p>
           </section>
-        </>
+        </div>
       )}
 
       {/* ════════════ SCENARIOS ════════════ */}
       {tab === "scenarios" && (
-        <>
+        <div className="cp-tabpanel" role="tabpanel" id="cp-panel-scenarios" aria-labelledby="cp-tab-scenarios" tabIndex={-1}>
           <section className="cp-proj-controls solo-head">
             <div className="cp-section-head wide">
               <div>
@@ -1348,7 +1365,7 @@ export default function CommissionProjector({ user } = {}) {
             </div>
             <p className="cp-foot">“Load” replaces your current working figures with the snapshot (your live figures aren’t saved automatically — save them first if you want to keep them). Multi-year commission uses each scenario’s own retention &amp; new-business assumptions.</p>
           </section>
-        </>
+        </div>
       )}
 
       <footer className="cp-footer">
@@ -1375,7 +1392,7 @@ function Field({ label, children }) {
 function Money({ value, onChange }) {
   // Pass the empty string through while the field is being cleared so the input
   // doesn't snap to 0 mid-edit; the engine coerces with Number(x) || 0 downstream.
-  return (<div className="cp-money-in wide"><span>{CUR.sym}</span><input type="number" value={value ?? ""} onChange={(e) => onChange(e.target.value === "" ? "" : Number(e.target.value))} /></div>);
+  return (<div className="cp-money-in wide"><span>{CUR.sym}</span><input type="number" placeholder="0" value={value ?? ""} onChange={(e) => onChange(e.target.value === "" ? "" : Number(e.target.value))} /></div>);
 }
 function Track({ threshold, total }) {
   const scaleMax = Math.max(total, threshold) * 1.08 || 1;
@@ -1406,9 +1423,10 @@ body{background:#fafbfc;}
   --field:#fafbfc; --backdrop:#eaeef2;
   --hairline:#d8e0e8; --hairline-faint:#eef2f6; --group-tint:#f1f5f9;
   --ink:#1c3857; --label:#5c6e80; --text-2:#556778; --muted:#5c6e80;
-  --dash:#b8c2cc; --saved-text:#5a9a6a;
+  --dash:#6f7c8a; --saved-text:#3f7e50;
   --on-navy-track:#2f4c6e; --on-navy-label:#7fa8c9; --on-navy-muted:#9fbdd6;
-  --amber:#d98a2b; --amber-bg:#fcf2e4;
+  --amber:#d98a2b; --amber-text:#a8651a; --amber-bg:#fcf2e4;
+  --danger:#c0492f;
   --line:#d8e0e8; --card:#ffffff;
   --rf:3px; --rc:2px;
   --fh:'Jost',system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
@@ -1418,6 +1436,10 @@ body{background:#fafbfc;}
   font-variant-numeric:tabular-nums; -webkit-font-smoothing:antialiased;
 }
 .cp-root *{box-sizing:border-box;}
+/* Visible keyboard focus ring on all interactive controls (mouse clicks are
+   unaffected — :focus-visible only matches keyboard/programmatic focus). */
+.cp-root button:focus-visible,.cp-root a:focus-visible,.cp-root select:focus-visible{outline:2px solid var(--blue);outline-offset:2px;border-radius:2px;}
+.cp-tabpanel:focus{outline:none;}
 .cp-root .ftnum,.cp-root [class*="-val"],.cp-root [class*="-total"]{font-variant-numeric:tabular-nums;}
 
 /* ── logo ── */
@@ -1432,8 +1454,9 @@ body{background:#fafbfc;}
 .cp-head-actions{display:flex;align-items:center;gap:12px;flex-wrap:wrap;}
 .cp-save{display:flex;align-items:center;gap:7px;font-family:var(--fb);font-size:13px;font-weight:600;color:var(--saved-text);}
 .cp-save-dot{width:8px;height:8px;border-radius:50%;background:var(--grn);flex:none;}
-.cp-save.warn{color:var(--amber);} .cp-save.warn .cp-save-dot{background:var(--amber);}
+.cp-save.warn{color:var(--amber-text);} .cp-save.warn .cp-save-dot{background:var(--amber);}
 .cp-save.off{color:var(--text-2);} .cp-save.off .cp-save-dot{background:var(--text-2);}
+.cp-save.err{color:var(--danger);} .cp-save.err .cp-save-dot{background:var(--danger);}
 .cp-btn{font-family:var(--fb);background:#fff;color:var(--navy);border:1px solid var(--navy);border-radius:var(--rc);padding:10px 18px;font-size:13px;font-weight:600;cursor:pointer;transition:background .15s ease,color .15s ease;}
 .cp-btn:hover{background:var(--group-tint);}
 .cp-btn.primary{background:var(--navy);color:#fff;}
@@ -1641,7 +1664,7 @@ body{background:#fafbfc;}
 .cp-snap-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-start;}
 .cp-nudge{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;background:var(--amber-bg);border:1px solid var(--amber);border-left-width:3px;border-radius:var(--rf);padding:13px 16px;margin-bottom:18px;}
 .cp-nudge span{font-size:13px;font-weight:600;color:var(--navy);line-height:1.5;}
-.cp-nudge .cp-btn{flex:none;border-color:var(--amber);color:var(--amber);}
+.cp-nudge .cp-btn{flex:none;border-color:var(--amber);color:var(--amber-text);}
 .cp-nudge .cp-btn:hover{background:var(--amber);color:#fff;}
 .cp-snap-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;align-items:end;}
 .cp-btn.danger{border-color:#c0492f;color:#c0492f;}
@@ -1659,12 +1682,12 @@ body{background:#fafbfc;}
 .cp-ledger thead th.cur{background:#234668;}
 .cp-ledger tbody td{padding:0;border-top:1px solid var(--hairline-faint);font-variant-numeric:tabular-nums;color:var(--text-2);}
 .cp-ledger tbody td.acc{padding:10px 14px;color:var(--navy);font-weight:700;text-align:left;}
-.cp-ledger tbody td.acc .tag{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;background:var(--amber-bg);color:var(--amber);padding:1px 6px;border-radius:var(--rc);margin-left:8px;vertical-align:middle;}
+.cp-ledger tbody td.acc .tag{font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;background:var(--amber-bg);color:var(--amber-text);padding:1px 6px;border-radius:var(--rc);margin-left:8px;vertical-align:middle;}
 .cp-ledger tbody td.acc.empty{color:var(--text-2);font-weight:500;}
 .cp-ledger tbody td.num{padding:10px 14px;text-align:right;font-weight:600;}
 .cp-ledger tbody td.fc{color:var(--label);}
 .cp-ledger tbody td.total{color:var(--navy);font-weight:800;}
-.cp-ledger tbody td.delta.pos{color:var(--grn-d);font-weight:700;} .cp-ledger tbody td.delta.neg{color:var(--amber);font-weight:700;} .cp-ledger tbody td.delta.muted{color:var(--dash);}
+.cp-ledger tbody td.delta.pos{color:var(--grn-d);font-weight:700;} .cp-ledger tbody td.delta.neg{color:var(--amber-text);font-weight:700;} .cp-ledger tbody td.delta.muted{color:var(--dash);}
 .cp-ledger tbody tr.orphan td.acc .nm{color:var(--text-2);}
 .cp-ledger td.cell{padding:0;position:relative;}
 .cp-ledger td.cell input{width:100%;border:0;background:none;padding:10px 14px;font-family:var(--fb);font-size:13px;font-weight:600;color:var(--navy);text-align:right;font-variant-numeric:tabular-nums;}
@@ -1675,7 +1698,7 @@ body{background:#fafbfc;}
 .cp-ledger tfoot td{background:var(--group-tint);border-top:2px solid var(--navy);padding:11px 14px;text-align:right;font-weight:800;color:var(--navy);font-variant-numeric:tabular-nums;}
 .cp-ledger tfoot td.acc{text-align:left;}
 .cp-ledger tfoot td.cur{background:rgba(0,155,214,.10);}
-.cp-ledger tfoot td.delta.pos{color:var(--grn-d);} .cp-ledger tfoot td.delta.neg{color:var(--amber);}
+.cp-ledger tfoot td.delta.pos{color:var(--grn-d);} .cp-ledger tfoot td.delta.neg{color:var(--amber-text);}
 .cp-panel.solo{margin-bottom:0;}
 
 /* ── footer ── */
@@ -1694,12 +1717,12 @@ body{background:#fafbfc;}
 .cp-section-head.wide{align-items:flex-start;}
 .cp-section-head.wide h2{margin:0;}
 .cp-proj-controls.solo-head{display:block;}
-.cp-qtable td.neg{color:var(--amber);font-weight:700;}
+.cp-qtable td.neg{color:var(--amber-text);font-weight:700;}
 .cp-row-actions{white-space:nowrap;text-align:right;}
 .cp-row-actions .cp-mini{display:inline-block;margin:0 0 0 12px;}
 .cp-mini.danger{color:#c0492f;} .cp-mini.danger:hover{color:#8f2f1c;}
 .cp-live-row td{background:rgba(0,155,214,.05);}
-.neg{color:var(--amber);}
+.neg{color:var(--amber-text);}
 
 /* ── account tools, search, card controls ── */
 .cp-count{font-family:var(--fb);font-size:13px;font-weight:500;color:var(--label);margin-left:6px;}

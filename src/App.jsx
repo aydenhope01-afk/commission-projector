@@ -13,5 +13,7 @@ export default function App() {
   }, []);
 
   if (session === undefined) return null; // brief load flash
-  return session ? <CommissionProjector user={session.user} /> : <Login />;
+  // key by user id: tear down and re-seed all state if the signed-in user
+  // changes, so one user's in-memory figures can never be saved under another's id.
+  return session ? <CommissionProjector key={session.user.id} user={session.user} /> : <Login />;
 }
