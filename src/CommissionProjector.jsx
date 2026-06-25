@@ -1,10 +1,8 @@
-import React, { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { supabase } from "./supabaseClient";
 
 /* ───────────────────────── constants ───────────────────────── */
-const STORAGE_KEY = "ft_commission_v2";
 const ICON_SRC = "/ft-icon.png"; // official Freight Tasker compass mark (public/)
-const LOGO_SRC = "data:image/png;base64,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";
 
 const TYPE_DEFAULTS = { FCL: 500, LCL: 300, AIR: 300, RORO: 1500 };
 const TYPES = ["FCL", "LCL", "AIR", "RORO"];
@@ -58,6 +56,33 @@ function currencySymbol() {
 }
 const A$ = (n) => fmtMoney(Math.round(n || 0), 0);
 const A$2 = (n) => fmtMoney(n || 0, 2);
+
+/* Re-sync the CUR formatting singleton from settings. Called at the top of each
+   render so all synchronous formatting in that pass uses the chosen currency.
+   Encapsulated here (rather than mutating CUR in the component body) to keep the
+   render function free of external mutation. */
+function applyCurrency(code) {
+  CUR.currency = code || "AUD";
+  CUR.locale = (CURRENCIES.find((c) => c.code === CUR.currency) || {}).locale || "en-AU";
+  CUR.sym = currencySymbol();
+}
+
+/* Derive the sales-rep display name + a stable document code from the signed-in
+   user, so the manifest header is correct per user (no hardcoded identity).
+   Falls back gracefully when no user is supplied (e.g. preview). */
+function repIdentity(user) {
+  const email = user?.email || "";
+  const metaName = (user?.user_metadata?.full_name || user?.user_metadata?.name || "").trim();
+  let name = metaName;
+  if (!name && email) {
+    name = email.split("@")[0].replace(/[._-]+/g, " ").replace(/\b\w/g, (c) => c.toUpperCase()).trim();
+  }
+  const seed = user?.id || email;
+  let h = 0;
+  for (let i = 0; i < seed.length; i++) h = (Math.imul(h, 31) + seed.charCodeAt(i)) >>> 0;
+  const doc = "CP-" + String(seed ? h % 10000 : 42).padStart(4, "0");
+  return { name: name || "—", email, doc };
+}
 
 /* ───────────────────────── persistence ───────────────────────── */
 /* Supabase is the source of truth; localStorage is an offline mirror so the
@@ -286,7 +311,6 @@ function computeYear(yearEntry, accounts, names, isCurrent, frac) {
   const perAcc = [];
   let ytd = 0, forecastTotal = 0;
   const qTotals = [0, 0, 0, 0];
-  let enteredQ = 0;
   const enteredFlags = [false, false, false, false];
   for (const id of ids) {
     const live = liveById[id];
@@ -303,7 +327,7 @@ function computeYear(yearEntry, accounts, names, isCurrent, frac) {
     ytd += sum;
     perAcc.push({ id, name, orphan, qv, sum, forecast, variance: sum - forecast, hasAny });
   }
-  enteredQ = enteredFlags.filter(Boolean).length;
+  const enteredQ = enteredFlags.filter(Boolean).length;
   // plan-to-date tracks continuous calendar progress through the year, so the
   // pace line rises smoothly instead of jumping a full quarter at a time.
   const progress = isCurrent ? Math.max(0, Math.min(1, frac)) : 1;
@@ -381,7 +405,7 @@ function Gauge({ total, threshold }) {
 }
 
 /* ───────────────────────── component ───────────────────────── */
-export default function CommissionProjector() {
+export default function CommissionProjector({ user } = {}) {
   const [tab, setTab] = useState("year");
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [accounts, setAccounts] = useState(seedAccounts);
@@ -397,10 +421,9 @@ export default function CommissionProjector() {
   const [actYear, setActYear] = useState(null); // selected fiscal-year key (start year) on the Actuals tab
 
   // Apply currency/locale for this render before any formatting runs.
-  CUR.currency = settings.currency || "AUD";
-  CUR.locale = (CURRENCIES.find((c) => c.code === CUR.currency) || {}).locale || "en-AU";
-  CUR.sym = currencySymbol();
+  applyCurrency(settings.currency);
   const fy = fiscalInfo(settings.fiscalYearStart);
+  const rep = repIdentity(user);
 
   useEffect(() => {
     loadState().then((s) => {
@@ -417,7 +440,9 @@ export default function CommissionProjector() {
   // Latest state blob + a "has unsynced local changes" flag, kept in refs so the
   // reconnect handler can flush without re-subscribing on every keystroke.
   const stateRef = useRef(null);
-  stateRef.current = { accounts, settings, proj, actuals, scenarios };
+  useEffect(() => {
+    stateRef.current = { accounts, settings, proj, actuals, scenarios };
+  });
   const pendingRef = useRef(false);
   const flush = (ok) => { setPersisted(ok); pendingRef.current = ok === "local"; };
 
@@ -560,6 +585,9 @@ export default function CommissionProjector() {
   // Ensure the current fiscal year always has an entry (frozen at first open).
   useEffect(() => {
     if (!loaded || tab !== "actuals") return;
+    // Seeds this fiscal year's snapshot once when the Actuals tab is first opened.
+    // This is a deliberate one-time external-state seed, not a render-driven sync.
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     setActuals((a) => {
       if (a.years && a.years[curYearKey]) return a;
       return { ...a, years: { ...(a.years || {}), [curYearKey]: { comp: liveComp, forecast: liveForecast, cells: {}, snapshotAt: new Date().toISOString() } } };
@@ -695,7 +723,13 @@ export default function CommissionProjector() {
   };
   // Long-form actuals: one row per account per tracked year, for Excel/archiving.
   const exportActualsCSV = () => {
-    const csvCell = (s) => { const v = String(s == null ? "" : s); return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v; };
+    const csvCell = (s) => {
+      let v = String(s == null ? "" : s);
+      // Guard against CSV formula injection: a leading =,+,-,@,tab,CR makes some
+      // spreadsheets execute the cell as a formula. Prefix with a single quote.
+      if (/^[=+\-@\t\r]/.test(v)) v = "'" + v;
+      return /[",\n]/.test(v) ? '"' + v.replace(/"/g, '""') + '"' : v;
+    };
     const yrs = Object.keys(actuals.years || {}).map(Number).sort((a, b) => a - b);
     const head = ["FY start year", "FY label", "Account", "Status", "Forecast", "Q1", "Q2", "Q3", "Q4", "Year actual", "Variance vs forecast", "Threshold", "Commission"];
     const rows = [];
@@ -721,7 +755,7 @@ export default function CommissionProjector() {
       <header className="cp-header">
         <Logo />
         <div className="cp-head-actions">
-          <span className={"cp-save " + (persisted === "remote" ? "ok" : persisted == null ? "off" : "warn")}>
+          <span aria-live="polite" className={"cp-save " + (persisted === "remote" ? "ok" : persisted == null ? "off" : "warn")}>
             <i className="cp-save-dot" />{persisted == null ? "Saved" : persisted === "remote" ? "Saved" : "Saved offline · will sync when back online"}
           </span>
           <button className="cp-btn primary" onClick={() => setShowSettings((s) => !s)}>{showSettings ? "Close settings" : "Settings"}</button>
@@ -731,8 +765,8 @@ export default function CommissionProjector() {
       </header>
 
       <div className="cp-meta">
-        <div className="cp-meta-cell"><div className="cp-meta-label">Document</div><div className="cp-meta-val">CP-0042 · {fy.label}</div></div>
-        <div className="cp-meta-cell"><div className="cp-meta-label">Sales rep</div><div className="cp-meta-val">Ayden Hope</div></div>
+        <div className="cp-meta-cell"><div className="cp-meta-label">Document</div><div className="cp-meta-val">{rep.doc} · {fy.label}</div></div>
+        <div className="cp-meta-cell"><div className="cp-meta-label">Sales rep</div><div className="cp-meta-val" title={rep.email}>{rep.name}</div></div>
         <div className="cp-meta-cell"><div className="cp-meta-label">Elapsed</div><div className="cp-meta-val">{Math.round(fy.frac * 100)}% of period</div></div>
         <div className="cp-meta-cell status">
           <span className={"cp-status " + (calc.commission > 0 ? "above" : "")}>Status · {calc.commission > 0 ? "Above line" : "Below line"}</span>
@@ -742,11 +776,11 @@ export default function CommissionProjector() {
       <div className="cp-eyebrow">Sales commission manifest</div>
       <div className="cp-titlerow">
         <h1 className="cp-title">Commission Projector</h1>
-        <nav className="cp-tabs">
-          <button className={tab === "year" ? "on" : ""} onClick={() => setTab("year")}>This year</button>
-          <button className={tab === "actuals" ? "on" : ""} onClick={() => setTab("actuals")}>Actuals &amp; pace</button>
-          <button className={tab === "multi" ? "on" : ""} onClick={() => setTab("multi")}>Multi-year</button>
-          <button className={tab === "scenarios" ? "on" : ""} onClick={() => setTab("scenarios")}>Scenarios</button>
+        <nav className="cp-tabs" role="tablist" aria-label="View">
+          <button role="tab" aria-selected={tab === "year"} className={tab === "year" ? "on" : ""} onClick={() => setTab("year")}>This year</button>
+          <button role="tab" aria-selected={tab === "actuals"} className={tab === "actuals" ? "on" : ""} onClick={() => setTab("actuals")}>Actuals &amp; pace</button>
+          <button role="tab" aria-selected={tab === "multi"} className={tab === "multi" ? "on" : ""} onClick={() => setTab("multi")}>Multi-year</button>
+          <button role="tab" aria-selected={tab === "scenarios"} className={tab === "scenarios" ? "on" : ""} onClick={() => setTab("scenarios")}>Scenarios</button>
         </nav>
       </div>
 
@@ -754,8 +788,8 @@ export default function CommissionProjector() {
         <section className="cp-settings">
           <Field label="Base salary"><Money value={settings.base} onChange={(v) => setSettings((s) => ({ ...s, base: v }))} /></Field>
           <Field label="Car allowance"><Money value={settings.car} onChange={(v) => setSettings((s) => ({ ...s, car: v }))} /></Field>
-          <Field label="Threshold multiplier"><input className="cp-input" type="number" step="0.1" value={settings.multiplier} onChange={(e) => setSettings((s) => ({ ...s, multiplier: Number(e.target.value) }))} /></Field>
-          <Field label="Commission rate %"><input className="cp-input" type="number" step="0.5" value={settings.rate} onChange={(e) => setSettings((s) => ({ ...s, rate: Number(e.target.value) }))} /></Field>
+          <Field label="Threshold multiplier"><input className="cp-input" type="number" step="0.1" value={settings.multiplier ?? ""} onChange={(e) => setSettings((s) => ({ ...s, multiplier: e.target.value === "" ? "" : Number(e.target.value) }))} /></Field>
+          <Field label="Commission rate %"><input className="cp-input" type="number" step="0.5" value={settings.rate ?? ""} onChange={(e) => setSettings((s) => ({ ...s, rate: e.target.value === "" ? "" : Number(e.target.value) }))} /></Field>
           <Field label="Annual commission target"><Money value={settings.target} onChange={(v) => setSettings((s) => ({ ...s, target: v }))} /></Field>
           <Field label="Fiscal year starts">
             <select className="cp-input" value={settings.fiscalYearStart} onChange={(e) => setSettings((s) => ({ ...s, fiscalYearStart: Number(e.target.value) }))}>
@@ -915,7 +949,7 @@ export default function CommissionProjector() {
                           <span className="cp-dot" style={{ background: TYPE_COLOR[ln.type] }} />
                           <select className="cp-sel type" aria-label="Freight type" value={ln.type} onChange={(e) => updateLine(acc.id, ln.id, { type: e.target.value })}>{TYPES.map((t) => <option key={t}>{t}</option>)}</select>
                           <select className="cp-sel" aria-label="Shipment frequency" value={ln.freq} onChange={(e) => updateLine(acc.id, ln.id, { freq: e.target.value })}>{FREQS.map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}</select>
-                          <div className="cp-money-in"><span>{CUR.sym}</span><input type="number" aria-label="Profit per shipment" value={ln.profit} onChange={(e) => updateLine(acc.id, ln.id, { profit: Number(e.target.value) })} /><em>/shpt</em></div>
+                          <div className="cp-money-in"><span>{CUR.sym}</span><input type="number" aria-label="Profit per shipment" value={ln.profit ?? ""} onChange={(e) => updateLine(acc.id, ln.id, { profit: e.target.value === "" ? "" : Number(e.target.value) })} /><em>/shpt</em></div>
                           <div className="cp-line-ann">{A$(ann)}<span>/yr</span>{ln.freq === "one-off" && <i className="cp-tag">one-off</i>}</div>
                           <button className="cp-x sm" aria-label="Remove freight line" onClick={() => removeLine(acc.id, ln.id)}>×</button>
                         </div>
@@ -1036,8 +1070,8 @@ export default function CommissionProjector() {
             <div className="cp-snap-grid">
               <Field label="Base salary"><Money value={yearData.comp ? yearData.comp.base : 0} onChange={(v) => setYearComp(activeYear, { base: v })} /></Field>
               <Field label="Car allowance"><Money value={yearData.comp ? yearData.comp.car : 0} onChange={(v) => setYearComp(activeYear, { car: v })} /></Field>
-              <Field label="Threshold multiplier"><div className="cp-money-in wide"><span>×</span><input type="number" step="0.1" value={yearData.comp ? yearData.comp.multiplier : 0} onChange={(e) => setYearComp(activeYear, { multiplier: Number(e.target.value) })} /></div></Field>
-              <Field label="Commission rate"><div className="cp-money-in wide"><span>%</span><input type="number" step="0.5" value={yearData.comp ? yearData.comp.rate : 0} onChange={(e) => setYearComp(activeYear, { rate: Number(e.target.value) })} /></div></Field>
+              <Field label="Threshold multiplier"><div className="cp-money-in wide"><span>×</span><input type="number" step="0.1" value={yearData.comp ? (yearData.comp.multiplier ?? "") : 0} onChange={(e) => setYearComp(activeYear, { multiplier: e.target.value === "" ? "" : Number(e.target.value) })} /></div></Field>
+              <Field label="Commission rate"><div className="cp-money-in wide"><span>%</span><input type="number" step="0.5" value={yearData.comp ? (yearData.comp.rate ?? "") : 0} onChange={(e) => setYearComp(activeYear, { rate: e.target.value === "" ? "" : Number(e.target.value) })} /></div></Field>
             </div>
             <p className="cp-foot">Frozen at year start so history doesn't drift when you change live settings. Package {A$(yearData.pkg)} × {yearData.comp ? yearData.comp.multiplier : 0} = {A$(yearData.threshold)} threshold; commission is {yearData.comp ? yearData.comp.rate : 0}% over.</p>
           </div>
@@ -1080,6 +1114,7 @@ export default function CommissionProjector() {
                         return (
                           <td key={i} className={"cell" + (cur ? " cur" : "") + (future ? " future" : "")}>
                             <input type="number" value={r.qv[i] == null ? "" : r.qv[i]} placeholder={future ? "" : "0"}
+                              aria-label={r.name + " — Q" + (i + 1) + " actual GP"}
                               onChange={(e) => setCell(activeYear, r.id, QKEYS[i], e.target.value)} />
                           </td>
                         );
@@ -1338,7 +1373,9 @@ function Field({ label, children }) {
   return (<label className="cp-field"><span>{label}</span>{children}</label>);
 }
 function Money({ value, onChange }) {
-  return (<div className="cp-money-in wide"><span>{CUR.sym}</span><input type="number" value={value} onChange={(e) => onChange(Number(e.target.value))} /></div>);
+  // Pass the empty string through while the field is being cleared so the input
+  // doesn't snap to 0 mid-edit; the engine coerces with Number(x) || 0 downstream.
+  return (<div className="cp-money-in wide"><span>{CUR.sym}</span><input type="number" value={value ?? ""} onChange={(e) => onChange(e.target.value === "" ? "" : Number(e.target.value))} /></div>);
 }
 function Track({ threshold, total }) {
   const scaleMax = Math.max(total, threshold) * 1.08 || 1;
@@ -1368,7 +1405,7 @@ body{background:#fafbfc;}
   --grn:#72c481; --grn-d:#479a5c;
   --field:#fafbfc; --backdrop:#eaeef2;
   --hairline:#d8e0e8; --hairline-faint:#eef2f6; --group-tint:#f1f5f9;
-  --ink:#1c3857; --label:#8595a5; --text-2:#64778a; --muted:#8595a5;
+  --ink:#1c3857; --label:#5c6e80; --text-2:#556778; --muted:#5c6e80;
   --dash:#b8c2cc; --saved-text:#5a9a6a;
   --on-navy-track:#2f4c6e; --on-navy-label:#7fa8c9; --on-navy-muted:#9fbdd6;
   --amber:#d98a2b; --amber-bg:#fcf2e4;

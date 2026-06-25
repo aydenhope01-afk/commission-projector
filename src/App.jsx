@@ -13,5 +13,5 @@ export default function App() {
   }, []);
 
   if (session === undefined) return null; // brief load flash
-  return session ? <CommissionProjector /> : <Login />;
+  return session ? <CommissionProjector user={session.user} /> : <Login />;
 }
