@@ -424,6 +424,21 @@ function Gauge({ total, threshold }) {
 /* ───────────────────────── component ───────────────────────── */
 export default function CommissionProjector({ user } = {}) {
   const [tab, setTab] = useState("year");
+  // Arrow-key navigation across the tablist (WAI-ARIA tabs pattern).
+  const onTabKey = (e) => {
+    const order = ["year", "actuals", "multi", "scenarios"];
+    const i = order.indexOf(tab);
+    let next = null;
+    if (e.key === "ArrowRight" || e.key === "ArrowDown") next = order[(i + 1) % order.length];
+    else if (e.key === "ArrowLeft" || e.key === "ArrowUp") next = order[(i - 1 + order.length) % order.length];
+    else if (e.key === "Home") next = order[0];
+    else if (e.key === "End") next = order[order.length - 1];
+    if (next) {
+      e.preventDefault();
+      setTab(next);
+      document.getElementById("cp-tab-" + next)?.focus();
+    }
+  };
   const [settings, setSettings] = useState(DEFAULT_SETTINGS);
   const [accounts, setAccounts] = useState(seedAccounts);
   const [proj, setProj] = useState(DEFAULT_PROJ);
@@ -436,6 +451,27 @@ export default function CommissionProjector({ user } = {}) {
   const [sort, setSort] = useState("custom");
   const [collapsed, setCollapsed] = useState(() => new Set());
   const [actYear, setActYear] = useState(null); // selected fiscal-year key (start year) on the Actuals tab
+
+  // In-app dialog (replaces blocking window.confirm/prompt) + toast (with optional Undo).
+  // `ask` returns a Promise: confirm dialogs resolve true/false; input dialogs
+  // resolve the typed string or null on cancel.
+  const [dialog, setDialog] = useState(null);
+  const dialogResolve = useRef(null);
+  const modalInputRef = useRef(null);
+  const ask = (opts) => new Promise((resolve) => { dialogResolve.current = resolve; setDialog(opts); });
+  const closeDialog = (result) => { setDialog(null); const r = dialogResolve.current; dialogResolve.current = null; if (r) r(result); };
+  const [toast, setToast] = useState(null);
+  const toastTimer = useRef(null);
+  const toastAction = useRef(null);
+  const showToast = (message, opts = {}) => {
+    clearTimeout(toastTimer.current);
+    toastAction.current = opts.onAction || null;
+    setToast({ message, actionLabel: opts.actionLabel, kind: opts.kind || "info" });
+    toastTimer.current = setTimeout(() => setToast(null), opts.duration || 6000);
+  };
+  const dismissToast = () => { clearTimeout(toastTimer.current); setToast(null); toastAction.current = null; };
+  const runToastAction = () => { const fn = toastAction.current; dismissToast(); if (fn) fn(); };
+  useEffect(() => () => clearTimeout(toastTimer.current), []);
 
   // Apply currency/locale for this render before any formatting runs.
   applyCurrency(settings.currency);
@@ -484,8 +520,14 @@ export default function CommissionProjector({ user } = {}) {
   const addAccount = (name) =>
     setAccounts((a) => [...a, { id: uid(), name: name || "New account", included: true, confidence: 100, lines: [{ id: uid(), type: "FCL", freq: "weekly", profit: TYPE_DEFAULTS.FCL }] }]);
   const removeAccount = (id) => {
-    if (typeof window !== "undefined" && window.confirm && !window.confirm("Remove this account?")) return;
+    const idx = accounts.findIndex((x) => x.id === id);
+    if (idx < 0) return;
+    const removed = accounts[idx];
     setAccounts((a) => a.filter((x) => x.id !== id));
+    showToast(`Removed "${removed.name || "account"}"`, {
+      actionLabel: "Undo",
+      onAction: () => setAccounts((a) => { const next = a.slice(); next.splice(Math.min(idx, next.length), 0, removed); return next; }),
+    });
   };
   const renameAccount = (id, name) => setAccounts((a) => a.map((x) => (x.id === id ? { ...x, name } : x)));
   const setConfidence = (id, v) =>
@@ -524,10 +566,15 @@ export default function CommissionProjector({ user } = {}) {
       )
     );
   const removeLine = (aid, lid) => setAccounts((a) => a.map((x) => (x.id === aid ? { ...x, lines: x.lines.filter((l) => l.id !== lid) } : x)));
-  const resetAll = () => {
-    if (typeof window === "undefined" || !window.confirm || window.confirm("Clear all accounts and reset settings?")) {
-      setAccounts([]); setSettings(DEFAULT_SETTINGS); setProj(DEFAULT_PROJ);
-    }
+  const resetAll = async () => {
+    const ok = await ask({ title: "Reset everything?", body: "This clears all accounts and restores default settings.", confirmLabel: "Reset", danger: true });
+    if (!ok) return;
+    const prev = { accounts, settings, proj };
+    setAccounts([]); setSettings(DEFAULT_SETTINGS); setProj(DEFAULT_PROJ);
+    showToast("Everything reset", {
+      actionLabel: "Undo",
+      onAction: () => { setAccounts(prev.accounts); setSettings(prev.settings); setProj(prev.proj); },
+    });
   };
 
   const fcLboxes = Math.ceil(calc.gap / (TYPE_DEFAULTS.FCL * 52)) || 0;
@@ -637,8 +684,9 @@ export default function CommissionProjector({ user } = {}) {
       years[year] = entry;
       return { ...a, years };
     });
-  const reSnapshot = (year) => {
-    if (typeof window !== "undefined" && window.confirm && !window.confirm("Re-freeze this year's forecast and pay snapshot from your current working figures? Entered actuals are kept.")) return;
+  const reSnapshot = async (year) => {
+    const ok = await ask({ title: "Re-freeze this year?", body: "Re-snapshots this year's forecast and pay package from your current working figures. Entered actuals are kept.", confirmLabel: "Re-freeze" });
+    if (!ok) return;
     setActuals((a) => {
       const years = { ...(a.years || {}) };
       const entry = { ...(years[year] || { cells: {} }) };
@@ -659,29 +707,42 @@ export default function CommissionProjector({ user } = {}) {
     addYear(next);
     setActYear(next);
   };
-  const deleteYear = (year) => {
-    if (typeof window !== "undefined" && window.confirm && !window.confirm(`Delete all actuals for ${fyLabelFor(year, settings.fiscalYearStart)}? This cannot be undone.`)) return;
+  const deleteYear = async (year) => {
+    const label = fyLabelFor(year, settings.fiscalYearStart);
+    const removed = actuals.years ? actuals.years[year] : null;
+    const ok = await ask({ title: `Delete ${label}?`, body: "Removes all entered actuals and the frozen snapshot for this fiscal year.", confirmLabel: "Delete", danger: true });
+    if (!ok) return;
     setActuals((a) => {
       const years = { ...(a.years || {}) };
       delete years[year];
       return { ...a, years };
     });
     setActYear(null);
+    showToast(`Deleted ${label}`, {
+      actionLabel: "Undo",
+      onAction: () => { if (removed) setActuals((a) => ({ ...a, years: { ...(a.years || {}), [year]: removed } })); setActYear(year); },
+    });
   };
 
   /* scenarios */
-  const saveScenario = () => {
-    const name = (typeof window !== "undefined" && window.prompt)
-      ? window.prompt("Name this scenario", "Scenario " + (scenarios.length + 1)) : "Scenario " + (scenarios.length + 1);
+  const saveScenario = async () => {
+    const name = await ask({ title: "Save scenario", body: "Name this snapshot of your current accounts, settings & forecast.", input: true, defaultValue: "Scenario " + (scenarios.length + 1), confirmLabel: "Save" });
     if (!name) return;
     setScenarios((s) => [...s, { id: uid(), name, savedAt: new Date().toISOString(), data: { accounts, settings, proj } }]);
+    showToast(`Saved "${name}"`);
   };
-  const loadScenario = (sc) => {
-    if (typeof window !== "undefined" && window.confirm && !window.confirm(`Load "${sc.name}"? This replaces your current working figures.`)) return;
+  const loadScenario = async (sc) => {
+    const prev = { accounts, settings, proj };
+    const ok = await ask({ title: `Load "${sc.name}"?`, body: "This replaces your current working figures (accounts, settings & forecast).", confirmLabel: "Load" });
+    if (!ok) return;
     setAccounts(sc.data.accounts || []);
     setSettings({ ...DEFAULT_SETTINGS, ...(sc.data.settings || {}) });
     setProj({ ...DEFAULT_PROJ, ...(sc.data.proj || {}) });
     setTab("year");
+    showToast(`Loaded "${sc.name}"`, {
+      actionLabel: "Undo",
+      onAction: () => { setAccounts(prev.accounts); setSettings(prev.settings); setProj(prev.proj); },
+    });
   };
   const deleteScenario = (id) => setScenarios((s) => s.filter((x) => x.id !== id));
 
@@ -719,20 +780,22 @@ export default function CommissionProjector({ user } = {}) {
       const file = input.files && input.files[0];
       if (!file) return;
       const reader = new FileReader();
-      reader.onload = () => {
+      reader.onload = async () => {
         let parsed;
         try { parsed = JSON.parse(String(reader.result)); }
-        catch { window.alert && window.alert("That file isn't valid JSON — restore cancelled."); return; }
+        catch { showToast("That file isn't valid JSON — restore cancelled.", { kind: "error" }); return; }
         if (!parsed || typeof parsed !== "object" || !Array.isArray(parsed.accounts)) {
-          window.alert && window.alert("This doesn't look like a Commission Projector backup — restore cancelled."); return;
+          showToast("This doesn't look like a Commission Projector backup — restore cancelled.", { kind: "error" }); return;
         }
-        if (window.confirm && !window.confirm("Restore this backup? It replaces ALL current accounts, settings, and year-on-year history. Consider exporting a backup first.")) return;
+        const ok = await ask({ title: "Restore this backup?", body: "It replaces ALL current accounts, settings, and year-on-year history. Consider downloading a backup first.", confirmLabel: "Restore", danger: true });
+        if (!ok) return;
         setAccounts((parsed.accounts || []).map((a) => ({ included: true, confidence: 100, ...a })));
         setSettings({ ...DEFAULT_SETTINGS, ...(parsed.settings || {}) });
         setProj({ ...DEFAULT_PROJ, ...(parsed.proj || {}) });
         setActuals(migrateActuals(parsed.actuals));
         setScenarios(Array.isArray(parsed.scenarios) ? parsed.scenarios : []);
         setActYear(null); setTab("year");
+        showToast("Backup restored.");
       };
       reader.readAsText(file);
     };
@@ -793,11 +856,11 @@ export default function CommissionProjector({ user } = {}) {
       <div className="cp-eyebrow">Sales commission manifest</div>
       <div className="cp-titlerow">
         <h1 className="cp-title">Commission Projector</h1>
-        <nav className="cp-tabs" role="tablist" aria-label="View">
-          <button role="tab" id="cp-tab-year" aria-controls="cp-panel-year" aria-selected={tab === "year"} className={tab === "year" ? "on" : ""} onClick={() => setTab("year")}>This year</button>
-          <button role="tab" id="cp-tab-actuals" aria-controls="cp-panel-actuals" aria-selected={tab === "actuals"} className={tab === "actuals" ? "on" : ""} onClick={() => setTab("actuals")}>Actuals &amp; pace</button>
-          <button role="tab" id="cp-tab-multi" aria-controls="cp-panel-multi" aria-selected={tab === "multi"} className={tab === "multi" ? "on" : ""} onClick={() => setTab("multi")}>Multi-year</button>
-          <button role="tab" id="cp-tab-scenarios" aria-controls="cp-panel-scenarios" aria-selected={tab === "scenarios"} className={tab === "scenarios" ? "on" : ""} onClick={() => setTab("scenarios")}>Scenarios</button>
+        <nav className="cp-tabs" role="tablist" aria-label="View" onKeyDown={onTabKey}>
+          <button role="tab" id="cp-tab-year" aria-controls="cp-panel-year" aria-selected={tab === "year"} tabIndex={tab === "year" ? 0 : -1} className={tab === "year" ? "on" : ""} onClick={() => setTab("year")}>This year</button>
+          <button role="tab" id="cp-tab-actuals" aria-controls="cp-panel-actuals" aria-selected={tab === "actuals"} tabIndex={tab === "actuals" ? 0 : -1} className={tab === "actuals" ? "on" : ""} onClick={() => setTab("actuals")}>Actuals &amp; pace</button>
+          <button role="tab" id="cp-tab-multi" aria-controls="cp-panel-multi" aria-selected={tab === "multi"} tabIndex={tab === "multi" ? 0 : -1} className={tab === "multi" ? "on" : ""} onClick={() => setTab("multi")}>Multi-year</button>
+          <button role="tab" id="cp-tab-scenarios" aria-controls="cp-panel-scenarios" aria-selected={tab === "scenarios"} tabIndex={tab === "scenarios" ? 0 : -1} className={tab === "scenarios" ? "on" : ""} onClick={() => setTab("scenarios")}>Scenarios</button>
         </nav>
       </div>
 
@@ -805,8 +868,8 @@ export default function CommissionProjector({ user } = {}) {
         <section className="cp-settings">
           <Field label="Base salary"><Money value={settings.base} onChange={(v) => setSettings((s) => ({ ...s, base: v }))} /></Field>
           <Field label="Car allowance"><Money value={settings.car} onChange={(v) => setSettings((s) => ({ ...s, car: v }))} /></Field>
-          <Field label="Threshold multiplier"><input className="cp-input" type="number" step="0.1" placeholder="0" value={settings.multiplier ?? ""} onChange={(e) => setSettings((s) => ({ ...s, multiplier: e.target.value === "" ? "" : Number(e.target.value) }))} /></Field>
-          <Field label="Commission rate %"><input className="cp-input" type="number" step="0.5" placeholder="0" value={settings.rate ?? ""} onChange={(e) => setSettings((s) => ({ ...s, rate: e.target.value === "" ? "" : Number(e.target.value) }))} /></Field>
+          <Field label="Threshold multiplier"><input className="cp-input" type="number" step="0.1" placeholder="0" value={settings.multiplier ?? ""} onChange={(e) => setSettings((s) => ({ ...s, multiplier: e.target.value === "" ? "" : Number(e.target.value) }))} onBlur={(e) => { if (e.target.value === "") setSettings((s) => ({ ...s, multiplier: 0 })); }} /></Field>
+          <Field label="Commission rate %"><input className="cp-input" type="number" step="0.5" placeholder="0" value={settings.rate ?? ""} onChange={(e) => setSettings((s) => ({ ...s, rate: e.target.value === "" ? "" : Number(e.target.value) }))} onBlur={(e) => { if (e.target.value === "") setSettings((s) => ({ ...s, rate: 0 })); }} /></Field>
           <Field label="Annual commission target"><Money value={settings.target} onChange={(v) => setSettings((s) => ({ ...s, target: v }))} /></Field>
           <Field label="Fiscal year starts">
             <select className="cp-input" value={settings.fiscalYearStart} onChange={(e) => setSettings((s) => ({ ...s, fiscalYearStart: Number(e.target.value) }))}>
@@ -966,7 +1029,7 @@ export default function CommissionProjector({ user } = {}) {
                           <span className="cp-dot" style={{ background: TYPE_COLOR[ln.type] }} />
                           <select className="cp-sel type" aria-label="Freight type" value={ln.type} onChange={(e) => updateLine(acc.id, ln.id, { type: e.target.value })}>{TYPES.map((t) => <option key={t}>{t}</option>)}</select>
                           <select className="cp-sel" aria-label="Shipment frequency" value={ln.freq} onChange={(e) => updateLine(acc.id, ln.id, { freq: e.target.value })}>{FREQS.map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}</select>
-                          <div className="cp-money-in"><span>{CUR.sym}</span><input type="number" aria-label="Profit per shipment" placeholder="0" value={ln.profit ?? ""} onChange={(e) => updateLine(acc.id, ln.id, { profit: e.target.value === "" ? "" : Number(e.target.value) })} /><em>/shpt</em></div>
+                          <div className="cp-money-in"><span>{CUR.sym}</span><input type="number" aria-label="Profit per shipment" placeholder="0" value={ln.profit ?? ""} onChange={(e) => updateLine(acc.id, ln.id, { profit: e.target.value === "" ? "" : Number(e.target.value) })} onBlur={(e) => { if (e.target.value === "") updateLine(acc.id, ln.id, { profit: 0 }); }} /><em>/shpt</em></div>
                           <div className="cp-line-ann">{A$(ann)}<span>/yr</span>{ln.freq === "one-off" && <i className="cp-tag">one-off</i>}</div>
                           <button className="cp-x sm" aria-label="Remove freight line" onClick={() => removeLine(acc.id, ln.id)}>×</button>
                         </div>
@@ -1087,8 +1150,8 @@ export default function CommissionProjector({ user } = {}) {
             <div className="cp-snap-grid">
               <Field label="Base salary"><Money value={yearData.comp ? yearData.comp.base : 0} onChange={(v) => setYearComp(activeYear, { base: v })} /></Field>
               <Field label="Car allowance"><Money value={yearData.comp ? yearData.comp.car : 0} onChange={(v) => setYearComp(activeYear, { car: v })} /></Field>
-              <Field label="Threshold multiplier"><div className="cp-money-in wide"><span>×</span><input type="number" step="0.1" placeholder="0" value={yearData.comp ? (yearData.comp.multiplier ?? "") : 0} onChange={(e) => setYearComp(activeYear, { multiplier: e.target.value === "" ? "" : Number(e.target.value) })} /></div></Field>
-              <Field label="Commission rate"><div className="cp-money-in wide"><span>%</span><input type="number" step="0.5" placeholder="0" value={yearData.comp ? (yearData.comp.rate ?? "") : 0} onChange={(e) => setYearComp(activeYear, { rate: e.target.value === "" ? "" : Number(e.target.value) })} /></div></Field>
+              <Field label="Threshold multiplier"><div className="cp-money-in wide"><span>×</span><input type="number" step="0.1" placeholder="0" value={yearData.comp ? (yearData.comp.multiplier ?? "") : 0} onChange={(e) => setYearComp(activeYear, { multiplier: e.target.value === "" ? "" : Number(e.target.value) })} onBlur={(e) => { if (e.target.value === "") setYearComp(activeYear, { multiplier: 0 }); }} /></div></Field>
+              <Field label="Commission rate"><div className="cp-money-in wide"><span>%</span><input type="number" step="0.5" placeholder="0" value={yearData.comp ? (yearData.comp.rate ?? "") : 0} onChange={(e) => setYearComp(activeYear, { rate: e.target.value === "" ? "" : Number(e.target.value) })} onBlur={(e) => { if (e.target.value === "") setYearComp(activeYear, { rate: 0 }); }} /></div></Field>
             </div>
             <p className="cp-foot">Frozen at year start so history doesn't drift when you change live settings. Package {A$(yearData.pkg)} × {yearData.comp ? yearData.comp.multiplier : 0} = {A$(yearData.threshold)} threshold; commission is {yearData.comp ? yearData.comp.rate : 0}% over.</p>
           </div>
@@ -1372,6 +1435,35 @@ export default function CommissionProjector({ user } = {}) {
         <img className="ft-foot-img" src={ICON_SRC} alt="Freight Tasker" />
         <span>Connecting ideas, people, goods and opportunity</span>
       </footer>
+
+      {dialog && (
+        <div className="cp-modal-backdrop" onClick={() => closeDialog(dialog.input ? null : false)}>
+          <div className="cp-modal" role="dialog" aria-modal="true" aria-labelledby="cp-modal-title"
+            onClick={(e) => e.stopPropagation()}
+            onKeyDown={(e) => { if (e.key === "Escape") closeDialog(dialog.input ? null : false); }}>
+            <h2 id="cp-modal-title" className="cp-modal-title">{dialog.title}</h2>
+            {dialog.body && <p className="cp-modal-body">{dialog.body}</p>}
+            {dialog.input && (
+              <input className="cp-input cp-modal-input" ref={modalInputRef} autoFocus
+                defaultValue={dialog.defaultValue || ""}
+                onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); closeDialog(modalInputRef.current?.value ?? ""); } }} />
+            )}
+            <div className="cp-modal-actions">
+              <button className="cp-btn" onClick={() => closeDialog(dialog.input ? null : false)}>{dialog.cancelLabel || "Cancel"}</button>
+              <button className={"cp-btn " + (dialog.danger ? "danger" : "primary")} autoFocus={!dialog.input}
+                onClick={() => closeDialog(dialog.input ? (modalInputRef.current?.value ?? "") : true)}>{dialog.confirmLabel || "Confirm"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {toast && (
+        <div className={"cp-toast " + (toast.kind || "info")} role="status" aria-live="polite">
+          <span className="cp-toast-msg">{toast.message}</span>
+          {toast.actionLabel && <button className="cp-toast-action" onClick={runToastAction}>{toast.actionLabel}</button>}
+          <button className="cp-toast-close" aria-label="Dismiss" onClick={dismissToast}>×</button>
+        </div>
+      )}
     </div>
   );
 }
@@ -1392,7 +1484,8 @@ function Field({ label, children }) {
 function Money({ value, onChange }) {
   // Pass the empty string through while the field is being cleared so the input
   // doesn't snap to 0 mid-edit; the engine coerces with Number(x) || 0 downstream.
-  return (<div className="cp-money-in wide"><span>{CUR.sym}</span><input type="number" placeholder="0" value={value ?? ""} onChange={(e) => onChange(e.target.value === "" ? "" : Number(e.target.value))} /></div>);
+  // On blur, settle a left-empty field back to 0 so stored state stays numeric.
+  return (<div className="cp-money-in wide"><span>{CUR.sym}</span><input type="number" placeholder="0" value={value ?? ""} onChange={(e) => onChange(e.target.value === "" ? "" : Number(e.target.value))} onBlur={(e) => { if (e.target.value === "") onChange(0); }} /></div>);
 }
 function Track({ threshold, total }) {
   const scaleMax = Math.max(total, threshold) * 1.08 || 1;
@@ -1501,7 +1594,6 @@ body{background:#fafbfc;}
 .cp-instr-label{font-size:12px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:var(--on-navy-label);margin-bottom:6px;position:relative;z-index:1;}
 .cp-gauge{display:flex;align-items:center;gap:26px;position:relative;z-index:1;}
 .cp-gauge svg{display:block;flex-shrink:0;}
-.cp-gauge-read{}
 .cp-gauge-pct{font-family:var(--fh);font-size:42px;font-weight:800;line-height:1;color:#fff;font-variant-numeric:tabular-nums;}
 .cp-gauge-pct span{font-size:22px;font-weight:800;}
 .cp-gauge-sub{font-size:12px;color:var(--on-navy-muted);margin-top:6px;font-variant-numeric:tabular-nums;}
@@ -1551,6 +1643,7 @@ body{background:#fafbfc;}
 
 /* ── ledger + rail grid ── */
 .cp-grid{display:grid;grid-template-columns:1fr 360px;gap:24px;align-items:start;}
+.cp-grid>*{min-width:0;}
 .cp-section-head{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;gap:12px;flex-wrap:wrap;}
 .cp-section-head h2{font-family:var(--fh);font-size:13px;font-weight:700;letter-spacing:.14em;color:var(--navy);margin:0;text-transform:uppercase;}
 .cp-add{font-family:var(--fb);background:var(--grn);color:#16321f;border:0;border-radius:var(--rc);padding:8px 15px;font-size:12.5px;font-weight:700;cursor:pointer;transition:filter .15s ease;}
@@ -1669,6 +1762,26 @@ body{background:#fafbfc;}
 .cp-snap-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;align-items:end;}
 .cp-btn.danger{border-color:#c0492f;color:#c0492f;}
 .cp-btn.danger:hover{background:#c0492f;color:#fff;}
+
+/* ── modal dialog ── */
+.cp-modal-backdrop{position:fixed;inset:0;background:rgba(20,32,48,0.42);display:flex;align-items:center;justify-content:center;padding:24px;z-index:1000;animation:cp-fade .12s ease;}
+.cp-modal{background:#fff;border-radius:var(--rf);box-shadow:0 16px 48px rgba(20,32,48,0.28);max-width:420px;width:100%;padding:24px;animation:cp-pop .14s ease;}
+.cp-modal-title{font-family:var(--fh);margin:0 0 8px;font-size:18px;font-weight:800;color:var(--navy);}
+.cp-modal-body{margin:0 0 16px;font-size:14px;line-height:1.5;color:var(--text-2);}
+.cp-modal-input{width:100%;box-sizing:border-box;margin-bottom:18px;}
+.cp-modal-actions{display:flex;justify-content:flex-end;gap:10px;}
+@keyframes cp-fade{from{opacity:0;}to{opacity:1;}}
+@keyframes cp-pop{from{opacity:0;transform:translateY(8px) scale(.98);}to{opacity:1;transform:none;}}
+
+/* ── toast ── */
+.cp-toast{position:fixed;left:50%;bottom:28px;transform:translateX(-50%);display:flex;align-items:center;gap:14px;background:var(--navy);color:#fff;padding:12px 16px;border-radius:var(--rf);box-shadow:0 10px 32px rgba(20,32,48,0.32);font-size:14px;font-weight:500;z-index:1001;max-width:min(90vw,460px);animation:cp-toast-in .16s ease;}
+.cp-toast.error{background:#c0492f;}
+.cp-toast-msg{flex:1;}
+.cp-toast-action{font-family:var(--fb);background:transparent;border:1px solid rgba(255,255,255,0.55);color:#fff;border-radius:var(--rc);padding:5px 12px;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap;transition:background .15s ease;}
+.cp-toast-action:hover{background:rgba(255,255,255,0.16);}
+.cp-toast-close{background:transparent;border:0;color:#fff;font-size:20px;line-height:1;cursor:pointer;opacity:0.75;padding:0 2px;}
+.cp-toast-close:hover{opacity:1;}
+@keyframes cp-toast-in{from{opacity:0;transform:translate(-50%,12px);}to{opacity:1;transform:translateX(-50%);}}
 
 /* ── actuals: per-account ledger ── */
 .cp-ledger-wrap{border:1px solid var(--navy);border-radius:var(--rf);overflow:hidden;margin-bottom:22px;}
@@ -1794,6 +1907,8 @@ body{background:#fafbfc;}
   .cp-meta-cell{border-right:none;border-bottom:1px solid var(--hairline);}
   .cp-meta-cell:last-child{border-bottom:none;}
   .cp-stats{grid-template-columns:1fr 1fr;}
+  .cp-settings,.cp-snap-grid{grid-template-columns:1fr;}
+  .cp-rail .cp-panel{overflow-x:auto;}
   .cp-gauge{flex-wrap:wrap;gap:14px;}
   .cp-line{flex-wrap:wrap;} .cp-line-ann{margin-left:0;}
   .cp-proj-fields{grid-template-columns:1fr;}
