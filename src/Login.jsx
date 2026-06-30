@@ -104,8 +104,10 @@ export default function Login() {
 
   async function sendLink() {
     setStatus("sending");
+    // Send the trimmed address — onSubmit validates email.trim(), so without this
+    // surrounding whitespace would be sent to signInWithOtp (and shown as "sent to").
     const { error } = await supabase.auth.signInWithOtp({
-      email,
+      email: email.trim(),
       options: { emailRedirectTo: window.location.origin },
     });
     setStatus(error ? "error" : "sent");
@@ -130,6 +132,7 @@ export default function Login() {
       return;
     }
     setFieldError("");
+    if (value !== email) setEmail(value); // normalize so the "sent to" line is clean
     sendLink();
   }
 
