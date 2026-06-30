@@ -163,7 +163,7 @@ async function signOutClearingMirror() {
   await supabase.auth.signOut();
 }
 
-const DEFAULT_SETTINGS = { base: 70000, car: 15000, multiplier: 2.5, rate: 10, target: 0, fiscalYearStart: 7, currency: "AUD" };
+const DEFAULT_SETTINGS = { base: 70000, car: 15000, multiplier: 2.5, rate: 10, target: 0, fiscalYearStart: 7, currency: "AUD", tiers: [] };
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 /* Fiscal-year + "today" awareness. fyStartMonth is 1-12. */
 function fiscalInfo(fyStartMonth, today = new Date()) {
@@ -178,7 +178,7 @@ function fiscalInfo(fyStartMonth, today = new Date()) {
   const label = m === 0 ? `${sy}` : `FY${String(sy).slice(2)}/${String(ey).slice(2)}`;
   return { start, end, frac, quarter, label, calendar: m === 0 };
 }
-const DEFAULT_PROJ = { retention: 85, years: 5, newPerYear: null, newGrowth: 100, payRise: 0 };
+const DEFAULT_PROJ = { retention: 85, years: 5, newPerYear: null, newGrowth: 100, payRise: 0, discount: 0 };
 
 /* ── actuals v2 ─────────────────────────────────────────────────────
    Per-account × per-quarter × per-year ledger. Years keyed by FY START
@@ -189,7 +189,7 @@ const DEFAULT_PROJ = { retention: 85, years: 5, newPerYear: null, newGrowth: 100
        names: { [accId]: "last known name" },     // for orphaned (removed) accounts
        years: {
          [startYear]: {
-           comp: { base, car, multiplier, rate },  // frozen pay snapshot
+           comp: { base, car, multiplier, rate, tiers },  // frozen pay snapshot
            forecast: { [accId]: annualGP },         // frozen at year start
            cells: { [accId]: { q1, q2, q3, q4 } },  // realised GP per quarter
          }
@@ -219,6 +219,59 @@ const seedAccounts = () => [
 ];
 
 /* ───────────────────────── engine (pure) ───────────────────────── */
+/* Piecewise (marginal) commission across accelerator bands.
+   `baseRatePct` applies from the commission line (threshold) up to the first
+   tier breakpoint. Each tier = { atMult, rate } sets a new marginal rate above
+   `atMult × threshold`. Breakpoints scale with the threshold, so they stay
+   meaningful across projection years where the line moves with pay rises.
+   With no valid tiers this reduces EXACTLY to the legacy flat calc:
+   max(0, gp − threshold) × baseRate — so existing plans are unchanged. */
+function tierCommission(gp, threshold, baseRatePct, tiers) {
+  const baseRate = (Number(baseRatePct) || 0) / 100;
+  const bands = (Array.isArray(tiers) ? tiers : [])
+    .map((t) => ({ at: (Number(t.atMult) || 0) * threshold, rate: (Number(t.rate) || 0) / 100 }))
+    .filter((t) => Number.isFinite(t.at) && t.at > threshold)
+    .sort((a, b) => a.at - b.at);
+  if (threshold <= 0 || bands.length === 0) return Math.max(0, gp - threshold) * baseRate;
+  const points = [{ at: threshold, rate: baseRate }, ...bands];
+  let comm = 0;
+  for (let i = 0; i < points.length; i++) {
+    const start = points[i].at;
+    if (gp <= start) break;
+    const end = i + 1 < points.length ? points[i + 1].at : Infinity;
+    comm += (Math.min(gp, end) - start) * points[i].rate;
+  }
+  return comm;
+}
+
+/* Inverse of tierCommission: the qualifying GP that yields `targetComm` of
+   commission. tierCommission is piecewise-linear and monotonic in GP, so we
+   walk the bands, consuming each band's commission capacity until the target
+   falls inside one, then solve that segment linearly. Returns Infinity if the
+   target is unreachable (e.g. a 0% base with no accelerator). */
+function gpForCommission(targetComm, threshold, baseRatePct, tiers) {
+  if (!(targetComm > 0)) return threshold;
+  const baseRate = (Number(baseRatePct) || 0) / 100;
+  const bands = (Array.isArray(tiers) ? tiers : [])
+    .map((t) => ({ at: (Number(t.atMult) || 0) * threshold, rate: (Number(t.rate) || 0) / 100 }))
+    .filter((t) => Number.isFinite(t.at) && t.at > threshold)
+    .sort((a, b) => a.at - b.at);
+  if (threshold <= 0 || bands.length === 0) return baseRate > 0 ? threshold + targetComm / baseRate : Infinity;
+  const points = [{ at: threshold, rate: baseRate }, ...bands];
+  let comm = 0;
+  for (let i = 0; i < points.length; i++) {
+    const start = points[i].at;
+    const end = i + 1 < points.length ? points[i + 1].at : Infinity;
+    const rate = points[i].rate;
+    if (rate > 0) {
+      const cap = end === Infinity ? Infinity : (end - start) * rate;
+      if (comm + cap >= targetComm) return start + (targetComm - comm) / rate;
+      comm += cap;
+    }
+  }
+  return Infinity;
+}
+
 function computeCalc(accounts, settings) {
   const pkg = (Number(settings.base) || 0) + (Number(settings.car) || 0);
   const threshold = pkg * (Number(settings.multiplier) || 0);
@@ -253,13 +306,13 @@ function computeCalc(accounts, settings) {
   const recurringGP = totalGP - oneOffGP;
   const concentration = { name: topName, value: topVal, pct: totalGP > 0 ? (topVal / totalGP) * 100 : 0 };
   const over = Math.max(0, totalGP - threshold);
-  const commission = over * rate;
+  const commission = tierCommission(totalGP, threshold, settings.rate, settings.tiers);
   const gap = Math.max(0, threshold - totalGP);
   const quarters = [];
   let prevComm = 0;
   for (let q = 1; q <= 4; q++) {
     const cumGP = totalGP * (q / 4);
-    const cumComm = Math.max(0, cumGP - threshold) * rate;
+    const cumComm = tierCommission(cumGP, threshold, settings.rate, settings.tiers);
     quarters.push({ q, cumGP, payment: cumComm - prevComm });
     prevComm = cumComm;
   }
@@ -267,31 +320,36 @@ function computeCalc(accounts, settings) {
 }
 
 function computeProjection(calc, settings, proj) {
-  const rate = (Number(settings.rate) || 0) / 100;
   const mult = Number(settings.multiplier) || 0;
   const basePkg = calc.pkg;
   const newPY = proj.newPerYear == null ? calc.totalGP : Number(proj.newPerYear) || 0;
   const ret = (Number(proj.retention) || 0) / 100;
   const growth = (proj.newGrowth == null ? 100 : Number(proj.newGrowth) || 0) / 100;
   const years = Number(proj.years) || 1;
+  // Optional inflation/opportunity-cost discount. Year 1 is "today" (undiscounted);
+  // each later year's commission is discounted to present value at this rate.
+  const disc = (Number(proj.discount) || 0) / 100;
   const rows = [];
   // Only recurring GP carries forward — one-off wins don't repeat.
   let prevRecurring = 0;
   let cumComm = 0;
+  let npvComm = 0;
   for (let y = 1; y <= years; y++) {
     const pkg = basePkg + (Number(proj.payRise) || 0) * (y - 1);
     const threshold = pkg * mult;
     const carried = y === 1 ? 0 : prevRecurring * ret;
     const newGP = y === 1 ? calc.totalGP : newPY * Math.pow(growth, y - 1);
     const total = carried + newGP;
-    const commission = Math.max(0, total - threshold) * rate;
+    const commission = tierCommission(total, threshold, settings.rate, settings.tiers);
     cumComm += commission;
-    rows.push({ y, pkg, threshold, carried, newGP, total, commission, earnings: pkg + commission, cumComm });
+    const pvComm = disc > 0 ? commission / Math.pow(1 + disc, y - 1) : commission;
+    npvComm += pvComm;
+    rows.push({ y, pkg, threshold, carried, newGP, total, commission, pvComm, earnings: pkg + commission, cumComm });
     // Year 1's recurring base excludes one-offs; later years are all recurring (carried + new business).
     prevRecurring = y === 1 ? calc.recurringGP : total;
   }
   const max = Math.max(...rows.map((r) => Math.max(r.total, r.threshold)), 1);
-  return { rows, cumComm, max, newPY };
+  return { rows, cumComm, npvComm, disc, max, newPY };
 }
 
 /* ── actuals engine (pure) ──────────────────────────────────────────
@@ -352,9 +410,11 @@ function computeYear(yearEntry, accounts, names, isCurrent, frac) {
   const pace = ytd - planToDate;
   // run-rate: annualise entered quarters; commission applies over threshold.
   const runRate = enteredQ > 0 ? (ytd / enteredQ) * 4 : 0;
-  const commission = Math.max(0, ytd - threshold) * rate;
-  const projRunComm = Math.max(0, runRate - threshold) * rate;
-  return { ids, perAcc, qTotals, ytd, forecastTotal, threshold, pkg, rate, runRate, progress, enteredQ, commission, projRunComm, planToDate, pace, comp };
+  const tiers = comp ? comp.tiers : null;
+  const compRate = comp ? comp.rate : 0;
+  const commission = tierCommission(ytd, threshold, compRate, tiers);
+  const projRunComm = tierCommission(runRate, threshold, compRate, tiers);
+  return { ids, perAcc, qTotals, enteredByQ: enteredFlags, ytd, forecastTotal, threshold, pkg, rate, runRate, progress, enteredQ, commission, projRunComm, planToDate, pace, comp };
 }
 /* Cross-year rollup for the history table. retention = how much of the prior
    year's realised GP carried into this year (realised carry proxy). */
@@ -519,6 +579,20 @@ export default function CommissionProjector({ user } = {}) {
 
   const addAccount = (name) =>
     setAccounts((a) => [...a, { id: uid(), name: name || "New account", included: true, confidence: 100, lines: [{ id: uid(), type: "FCL", freq: "weekly", profit: TYPE_DEFAULTS.FCL }] }]);
+  // Accelerator bands: each tier raises the marginal rate above `atMult × line`.
+  const tiers = Array.isArray(settings.tiers) ? settings.tiers : [];
+  const addTier = () =>
+    setSettings((s) => {
+      const cur = Array.isArray(s.tiers) ? s.tiers : [];
+      const lastMult = cur.length ? Number(cur[cur.length - 1].atMult) || 1 : 1;
+      const lastRate = cur.length ? Number(cur[cur.length - 1].rate) || 0 : Number(s.rate) || 0;
+      const nextMult = Math.round((Math.max(1, lastMult) + 0.5) * 10) / 10;
+      return { ...s, tiers: [...cur, { atMult: nextMult, rate: lastRate + 5 }] };
+    });
+  const updateTier = (i, patch) =>
+    setSettings((s) => ({ ...s, tiers: (Array.isArray(s.tiers) ? s.tiers : []).map((t, j) => (j === i ? { ...t, ...patch } : t)) }));
+  const removeTier = (i) =>
+    setSettings((s) => ({ ...s, tiers: (Array.isArray(s.tiers) ? s.tiers : []).filter((_, j) => j !== i) }));
   const removeAccount = (id) => {
     const idx = accounts.findIndex((x) => x.id === id);
     if (idx < 0) return;
@@ -601,8 +675,12 @@ export default function CommissionProjector({ user } = {}) {
 
   /* target */
   const targetAmt = Number(settings.target) || 0;
-  const gpForTarget = calc.rate > 0 ? calc.threshold + targetAmt / calc.rate : 0;
-  const gpToTarget = Math.max(0, gpForTarget - calc.totalGP);
+  const gpForTarget = gpForCommission(targetAmt, calc.threshold, settings.rate, settings.tiers);
+  const targetReachable = Number.isFinite(gpForTarget);
+  const gpToTarget = targetReachable ? Math.max(0, gpForTarget - calc.totalGP) : 0;
+  // Goal-seek: translate the GP still needed for the target into tangible volume.
+  const targetFcl = Math.ceil(gpToTarget / (TYPE_DEFAULTS.FCL * 52)) || 0;
+  const targetRoro = Math.ceil(gpToTarget / (TYPE_DEFAULTS.RORO * 12)) || 0;
 
   /* ── actuals & pace (v2) ── */
   const curQ = fy.quarter; // current fiscal quarter
@@ -625,14 +703,15 @@ export default function CommissionProjector({ user } = {}) {
     return f;
   }, [accounts, calc.accTotals]);
   const liveComp = useMemo(
-    () => ({ base: Number(settings.base) || 0, car: Number(settings.car) || 0, multiplier: Number(settings.multiplier) || 0, rate: Number(settings.rate) || 0 }),
-    [settings.base, settings.car, settings.multiplier, settings.rate]
+    () => ({ base: Number(settings.base) || 0, car: Number(settings.car) || 0, multiplier: Number(settings.multiplier) || 0, rate: Number(settings.rate) || 0, tiers: Array.isArray(settings.tiers) ? settings.tiers : [] }),
+    [settings.base, settings.car, settings.multiplier, settings.rate, settings.tiers]
   );
 
   const yearEntry = actuals.years ? actuals.years[activeYear] : null;
+  const fyFrac = fy.frac;
   const yearData = useMemo(
-    () => computeYear(yearEntry, accounts, names, isCurrentYear, fy.frac),
-    [yearEntry, accounts, names, isCurrentYear, fy.frac]
+    () => computeYear(yearEntry, accounts, names, isCurrentYear, fyFrac),
+    [yearEntry, accounts, names, isCurrentYear, fyFrac]
   );
   const history = useMemo(() => computeHistory(actuals, accounts, names), [actuals, accounts, names]);
   const yearKeys = useMemo(() => {
@@ -839,10 +918,93 @@ export default function CommissionProjector({ user } = {}) {
             <i className="cp-save-dot" />{persisted == null || persisted === "remote" ? "Saved" : persisted === "auth" ? "Session expired · sign in again to save" : "Saved offline · will sync when back online"}
           </span>
           <button className="cp-btn primary" onClick={() => setShowSettings((s) => !s)}>{showSettings ? "Close settings" : "Settings"}</button>
-          <button className="cp-btn" onClick={printView}>Print</button>
+          <button className="cp-btn" onClick={printView}>Manifest PDF</button>
           <button className="cp-btn" onClick={() => signOutClearingMirror()}>Sign out</button>
         </div>
       </header>
+
+      {/* B2 — print-only one-page Commission Manifest (Print / Save as PDF) */}
+      <section className="cp-manifest" aria-hidden="true">
+        <div className="cp-mf-head">
+          <div className="cp-mf-brand"><span className="cp-mf-ft">Freight Tasker</span><span className="cp-mf-doc">Commission Manifest</span></div>
+          <div className="cp-mf-meta">
+            <div><span>Document</span><b>{rep.doc}</b></div>
+            <div><span>Fiscal year</span><b>{fy.label}</b></div>
+            <div><span>Sales rep</span><b>{rep.name}</b></div>
+            <div><span>Generated</span><b>{new Date().toLocaleDateString(CUR.locale, { day: "numeric", month: "short", year: "numeric" })}</b></div>
+          </div>
+        </div>
+
+        <div className="cp-mf-cols">
+          <div className="cp-mf-block">
+            <h3>Compensation basis</h3>
+            <dl>
+              <div><dt>Base salary</dt><dd>{A$(settings.base)}</dd></div>
+              <div><dt>Car allowance</dt><dd>{A$(settings.car)}</dd></div>
+              <div><dt>Package</dt><dd>{A$(calc.pkg)}</dd></div>
+              <div><dt>Threshold multiplier</dt><dd>×{settings.multiplier || 0}</dd></div>
+              <div><dt>Commission threshold</dt><dd>{A$(calc.threshold)}</dd></div>
+              <div><dt>Commission rate</dt><dd>{settings.rate || 0}%{tiers.length ? " + accelerators" : ""}</dd></div>
+            </dl>
+            {tiers.length > 0 && (
+              <div className="cp-mf-bands">
+                <div className="cp-mf-band"><span>From the line ({A$(calc.threshold)})</span><b>{settings.rate || 0}%</b></div>
+                {tiers.map((t, i) => (
+                  <div className="cp-mf-band" key={i}><span>Above {A$(calc.threshold * (Number(t.atMult) || 0))} ({(Number(t.atMult) || 0)}×)</span><b>{Number(t.rate) || 0}%</b></div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          <div className="cp-mf-block">
+            <h3>This year's projection</h3>
+            <dl>
+              <div><dt>Forecast GP</dt><dd>{A$(calc.totalGP)}</dd></div>
+              <div><dt>Over the line</dt><dd>{A$(calc.over)}</dd></div>
+              <div className="hi"><dt>Projected commission</dt><dd>{A$(calc.commission)}</dd></div>
+              <div><dt>Total earnings</dt><dd>{A$(calc.total)}</dd></div>
+              {targetAmt > 0 && (
+                <div><dt>Commission target</dt><dd>{A$(targetAmt)} · {calc.commission >= targetAmt ? "met" : targetReachable ? A$(Math.max(0, gpForTarget - calc.totalGP)) + " GP to go" : "out of reach"}</dd></div>
+              )}
+            </dl>
+          </div>
+        </div>
+
+        <div className="cp-mf-block wide">
+          <h3>Multi-year outlook · {proj.years || projection.rows.length} years{proj.payRise ? ` · ${A$(proj.payRise)}/yr pay rise` : ""}{projection.disc > 0 ? ` · ${proj.discount}% discount` : ""}</h3>
+          <table className="cp-mf-table">
+            <thead>
+              <tr>
+                <th>Year</th><th className="n">Package</th><th className="n">Forecast GP</th><th className="n">Threshold</th><th className="n">Commission</th>{projection.disc > 0 && <th className="n">Present value</th>}<th className="n">Total earnings</th>
+              </tr>
+            </thead>
+            <tbody>
+              {projection.rows.map((r) => (
+                <tr key={r.y}>
+                  <td>Year {r.y}</td>
+                  <td className="n">{A$(r.pkg)}</td>
+                  <td className="n">{A$(r.total)}</td>
+                  <td className="n">{A$(r.threshold)}</td>
+                  <td className="n">{A$(r.commission)}</td>
+                  {projection.disc > 0 && <td className="n">{A$(r.pvComm)}</td>}
+                  <td className="n">{A$(r.earnings)}</td>
+                </tr>
+              ))}
+            </tbody>
+            <tfoot>
+              <tr>
+                <td>Cumulative</td>
+                <td className="n" colSpan={3}></td>
+                <td className="n">{A$(projection.cumComm)}</td>
+                {projection.disc > 0 && <td className="n">{A$(projection.npvComm)}</td>}
+                <td className="n"></td>
+              </tr>
+            </tfoot>
+          </table>
+        </div>
+
+        <p className="cp-mf-foot">Indicative projection generated by the Freight Tasker Commission Projector. Figures are estimates based on entered forecasts and current compensation settings, not a guarantee of earnings. Confidential.</p>
+      </section>
 
       <div className="cp-meta">
         <div className="cp-meta-cell"><div className="cp-meta-label">Document</div><div className="cp-meta-val">{rep.doc} · {fy.label}</div></div>
@@ -881,8 +1043,39 @@ export default function CommissionProjector({ user } = {}) {
               {CURRENCIES.map((c) => <option key={c.code} value={c.code}>{c.label}</option>)}
             </select>
           </Field>
+          <div className="cp-tiers">
+            <div className="cp-tiers-head">
+              <div>
+                <b>Accelerator bands</b>
+                <span className="cp-tiers-sub">Marginal rates above the commission line. Leave empty for a flat {settings.rate || 0}%.</span>
+              </div>
+              <button className="cp-btn" onClick={addTier}>+ Add band</button>
+            </div>
+            <div className="cp-tier-row cp-tier-base">
+              <span className="cp-tier-label">From the line <em>({A$(calc.threshold)})</em></span>
+              <span className="cp-tier-rate">{settings.rate || 0}%</span>
+              <span className="cp-tier-x" />
+            </div>
+            {tiers.map((t, i) => (
+              <div className="cp-tier-row" key={i}>
+                <span className="cp-tier-label">
+                  Above
+                  <input className="cp-tier-mult" type="number" step="0.1" min="1" placeholder="1.5" value={t.atMult ?? ""}
+                    onChange={(e) => updateTier(i, { atMult: e.target.value === "" ? "" : Number(e.target.value) })}
+                    onBlur={(e) => { if (e.target.value === "") updateTier(i, { atMult: 1 }); }} />
+                  × the line <em>({A$(calc.threshold * (Number(t.atMult) || 0))})</em>
+                </span>
+                <span className="cp-tier-rate">
+                  <input className="cp-tier-pct" type="number" step="0.5" placeholder="0" value={t.rate ?? ""}
+                    onChange={(e) => updateTier(i, { rate: e.target.value === "" ? "" : Number(e.target.value) })}
+                    onBlur={(e) => { if (e.target.value === "") updateTier(i, { rate: 0 }); }} />%
+                </span>
+                <button className="cp-tier-x cp-x sm" aria-label="Remove band" onClick={() => removeTier(i)}>×</button>
+              </div>
+            ))}
+          </div>
           <div className="cp-settings-note">
-            Package <b>{A$(calc.pkg)}</b> × {settings.multiplier} = <b>{A$(calc.threshold)}</b> threshold · {settings.rate}% on every dollar over.
+            Package <b>{A$(calc.pkg)}</b> × {settings.multiplier} = <b>{A$(calc.threshold)}</b> threshold · {tiers.length ? `tiered from ${settings.rate || 0}%` : `${settings.rate}% on every dollar over`}.
             <button className="cp-reset" onClick={resetAll}>Reset all</button>
           </div>
           <div className="cp-data-row">
@@ -941,8 +1134,10 @@ export default function CommissionProjector({ user } = {}) {
               <div className="cp-target-caption">
                 {calc.commission >= targetAmt ? (
                   <><b className="pos">Target hit.</b> Projected commission {A$(calc.commission)} is <b className="pos">{A$(calc.commission - targetAmt)}</b> above your {A$(targetAmt)} target.</>
+                ) : targetReachable ? (
+                  <>Target <b>{A$(targetAmt)}</b> needs <b>{A$(gpForTarget)}</b> qualifying GP — <b className="pos">{A$(gpToTarget)}</b> more from here, about <b>{targetFcl}</b> more weekly FCL {targetFcl === 1 ? "box" : "boxes"} or <b>{targetRoro}</b> monthly RORO {targetRoro === 1 ? "unit" : "units"}.</>
                 ) : (
-                  <>Target <b>{A$(targetAmt)}</b> needs <b>{A$(gpForTarget)}</b> qualifying GP — <b className="pos">{A$(gpToTarget)}</b> more from here.</>
+                  <>Target <b>{A$(targetAmt)}</b> can't be reached at a 0% rate — set a commission rate or an accelerator band.</>
                 )}
               </div>
             )}
@@ -1128,6 +1323,49 @@ export default function CommissionProjector({ user } = {}) {
             <Stat label="Commission earned" value={A$(yearData.commission)} sub={isCurrentYear ? "≈ " + A$(yearData.projRunComm) + " at run-rate" : "realised"} />
           </section>
 
+          {/* B4 — quarter-by-quarter pace vs plan */}
+          {yearData.enteredQ > 0 && (() => {
+            const planQ = yearData.forecastTotal / 4;
+            // 18% headroom so the tallest bar's value label fits inside the box.
+            // Bars and the plan line share this single reference, so a bar that
+            // equals the plan reaches exactly the plan line.
+            const max = Math.max(...yearData.qTotals, planQ, 1) * 1.18;
+            const planPct = (planQ / max) * 100;
+            return (
+              <section className="cp-panel solo cp-spark-wrap">
+                <div className="cp-spark-head">
+                  <h2>Quarter-by-quarter vs plan</h2>
+                  <span className="cp-foot" style={{ margin: 0 }}>Plan line {A$(planQ)}/qtr</span>
+                </div>
+                <div className="cp-spark">
+                  <div className="cp-spark-cols">
+                    <div className="cp-spark-plan" style={{ bottom: `${planPct}%` }} aria-hidden="true" />
+                    {yearData.qTotals.map((v, i) => {
+                      const entered = yearData.enteredByQ[i];
+                      const cur = isCurrentYear && i + 1 === curQ;
+                      const h = (v / max) * 100;
+                      const ahead = entered && v >= planQ;
+                      return (
+                        <div key={i} className={"cp-spark-col" + (cur ? " cur" : "")}>
+                          {entered && <span className="cp-spark-val" style={{ bottom: `${Math.max(h, 1.5)}%` }}>{A$(v)}</span>}
+                          <div
+                            className={"cp-spark-bar" + (!entered ? " empty" : ahead ? " ahead" : " behind")}
+                            style={{ height: entered ? `${Math.max(h, 1.5)}%` : "0%" }}
+                          />
+                        </div>
+                      );
+                    })}
+                  </div>
+                  <div className="cp-spark-labels">
+                    {[0, 1, 2, 3].map((i) => (
+                      <span key={i} className={"cp-spark-lbl" + (isCurrentYear && i + 1 === curQ ? " cur" : "")}>Q{i + 1}</span>
+                    ))}
+                  </div>
+                </div>
+              </section>
+            );
+          })()}
+
           {snapshotDrift && (
             <div className="cp-nudge">
               <span>Your live forecast ({A$(liveForecastTotal)}) differs from this year's frozen snapshot ({A$(yearData.forecastTotal)}). Re-snapshot to baseline {fyLabelFor(activeYear, settings.fiscalYearStart)} on your current figures?</span>
@@ -1301,13 +1539,16 @@ export default function CommissionProjector({ user } = {}) {
                   {[3, 4, 5, 6, 7].map((y) => <option key={y} value={y}>{y} years</option>)}
                 </select>
               </Field>
+              <Field label="Discount rate % (NPV)">
+                <div className="cp-money-in wide"><span>%</span><input type="number" step="0.5" min="0" placeholder="0" value={proj.discount ?? ""} onChange={(e) => setProj((p) => ({ ...p, discount: e.target.value === "" ? "" : Number(e.target.value) }))} onBlur={(e) => { if (e.target.value === "") setProj((p) => ({ ...p, discount: 0 })); }} /></div>
+              </Field>
             </div>
           </section>
 
           <section className="cp-stats three">
             <Stat label={`Year ${proj.years} GP`} value={A$(lastRow.total)} sub="rolled-up book" />
             <Stat label={`Year ${proj.years} commission`} value={A$(lastRow.commission)} />
-            <Stat label={`${proj.years}-year commission`} value={A$(projection.cumComm)} accent sub="cumulative" />
+            <Stat label={`${proj.years}-year commission`} value={A$(projection.cumComm)} accent sub={projection.disc > 0 ? `${A$(projection.npvComm)} present value` : "cumulative"} />
           </section>
 
           <section className="cp-chart-wrap">
@@ -1361,7 +1602,7 @@ export default function CommissionProjector({ user } = {}) {
                 </tbody>
               </table>
             </div>
-            <p className="cp-foot">Year 1 = your current book{calc.oneOffGP > 0 ? ` (including ${A$(calc.oneOffGP)} of one-off wins)` : ""}. Each later year carries the prior {calc.oneOffGP > 0 ? "recurring " : ""}book forward at {proj.retention}% retention{calc.oneOffGP > 0 ? " — one-off wins don't repeat" : ""} and adds new GP{proj.newGrowth === 100 ? ` of ${A$(projection.newPY)}` : ` based on ${A$(projection.newPY)}, compounding ${proj.newGrowth}% a year from year 2`}. Threshold grows with any pay rise. Commission is {settings.rate}% on every dollar over that year's threshold. The {proj.years}-year total sums each year's commission in nominal dollars (no inflation discount).</p>
+            <p className="cp-foot">Year 1 = your current book{calc.oneOffGP > 0 ? ` (including ${A$(calc.oneOffGP)} of one-off wins)` : ""}. Each later year carries the prior {calc.oneOffGP > 0 ? "recurring " : ""}book forward at {proj.retention}% retention{calc.oneOffGP > 0 ? " — one-off wins don't repeat" : ""} and adds new GP{proj.newGrowth === 100 ? ` of ${A$(projection.newPY)}` : ` based on ${A$(projection.newPY)}, compounding ${proj.newGrowth}% a year from year 2`}. Threshold grows with any pay rise. Commission is {tiers.length ? `tiered, starting at ${settings.rate}%` : `${settings.rate}%`} on every dollar over that year's threshold. The {proj.years}-year total sums each year's commission in nominal dollars{projection.disc > 0 ? `; the present value discounts later years at ${proj.discount}% a year back to today` : " (no inflation discount)"}.</p>
           </section>
         </div>
       )}
@@ -1428,6 +1669,36 @@ export default function CommissionProjector({ user } = {}) {
             </div>
             <p className="cp-foot">“Load” replaces your current working figures with the snapshot (your live figures aren’t saved automatically — save them first if you want to keep them). Multi-year commission uses each scenario’s own retention &amp; new-business assumptions.</p>
           </section>
+
+          {scenarios.length > 0 && (() => {
+            const bars = [
+              { id: "__live", name: "Current (live)", value: projection.cumComm, live: true },
+              ...scenarios.map((sc) => {
+                const sCalc = computeCalc(sc.data.accounts || [], { ...DEFAULT_SETTINGS, ...(sc.data.settings || {}) });
+                const sProj = computeProjection(sCalc, { ...DEFAULT_SETTINGS, ...(sc.data.settings || {}) }, { ...DEFAULT_PROJ, ...(sc.data.proj || {}) });
+                return { id: sc.id, name: sc.name, value: sProj.cumComm, live: false };
+              }),
+            ];
+            const max = Math.max(...bars.map((b) => b.value), 1);
+            const best = bars.reduce((m, b) => (b.value > m.value ? b : m), bars[0]);
+            return (
+              <section className="cp-panel solo">
+                <h2 className="cp-cmp-title">{proj.years}-year commission by scenario</h2>
+                <div className="cp-cmp-chart">
+                  {bars.map((b) => (
+                    <div className={"cp-cmp-row" + (b.live ? " live" : "")} key={b.id}>
+                      <span className="cp-cmp-name" title={b.name}>{b.name}</span>
+                      <span className="cp-cmp-bar-track">
+                        <span className="cp-cmp-bar" style={{ width: (Math.max(0, b.value) / max) * 100 + "%" }} />
+                      </span>
+                      <span className="cp-cmp-val">{A$(b.value)}</span>
+                    </div>
+                  ))}
+                </div>
+                <p className="cp-foot">Highest {proj.years}-year commission: <b>{best.name}</b> at <b className="pos">{A$(best.value)}</b>. Bars compare cumulative commission across the same horizon using each scenario’s own assumptions.</p>
+              </section>
+            );
+          })()}
         </div>
       )}
 
@@ -1576,6 +1847,19 @@ body{background:#fafbfc;}
 
 /* ── settings ── */
 .cp-settings{margin-bottom:30px;background:#fff;border:1px solid var(--hairline);border-radius:var(--rf);padding:18px;display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:14px;align-items:end;}
+.cp-tiers{grid-column:1/-1;border-top:1px solid var(--hairline-faint);padding-top:14px;}
+.cp-tiers-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px;flex-wrap:wrap;}
+.cp-tiers-head b{font-size:14px;color:var(--navy);}
+.cp-tiers-sub{display:block;font-size:12px;color:var(--text-2);margin-top:2px;}
+.cp-tier-row{display:flex;align-items:center;gap:12px;padding:7px 0;border-top:1px solid var(--hairline-faint);font-size:13px;color:var(--text-2);}
+.cp-tier-row:first-of-type{border-top:none;}
+.cp-tier-base{color:var(--label);font-weight:600;}
+.cp-tier-label{flex:1;display:flex;align-items:center;gap:7px;flex-wrap:wrap;}
+.cp-tier-label em{color:var(--label);font-style:normal;font-variant-numeric:tabular-nums;}
+.cp-tier-mult,.cp-tier-pct{font-family:var(--fb);border:1px solid var(--hairline);border-radius:var(--rc);padding:5px 7px;font-size:13px;font-weight:600;color:var(--navy);background:#fff;width:62px;text-align:right;font-variant-numeric:tabular-nums;}
+.cp-tier-mult:focus,.cp-tier-pct:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 3px rgba(0,155,214,.13);}
+.cp-tier-rate{font-weight:700;color:var(--navy);font-variant-numeric:tabular-nums;display:flex;align-items:center;gap:2px;min-width:64px;justify-content:flex-end;}
+.cp-tier-x{width:20px;display:flex;justify-content:center;flex-shrink:0;}
 .cp-settings-note{grid-column:1/-1;font-size:13px;color:var(--text-2);border-top:1px solid var(--hairline-faint);padding-top:12px;display:flex;justify-content:space-between;align-items:center;gap:10px;flex-wrap:wrap;}
 .cp-settings-note b{color:var(--navy);font-weight:700;}
 .cp-data-row{grid-column:1/-1;display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap;border-top:1px solid var(--hairline-faint);padding-top:14px;}
@@ -1681,6 +1965,30 @@ body{background:#fafbfc;}
 .cp-panel{background:#fff;border:1px solid var(--hairline);border-top:2px solid var(--blue);border-radius:var(--rf);padding:18px 20px;}
 .cp-panel.solo{margin-top:18px;}
 .cp-panel h3{font-family:var(--fh);margin:0 0 14px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.14em;color:var(--navy);border-bottom:1px solid var(--navy);padding-bottom:10px;}
+.cp-cmp-title{font-family:var(--fh);margin:0 0 14px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.14em;color:var(--navy);border-bottom:1px solid var(--navy);padding-bottom:10px;}
+.cp-cmp-chart{display:flex;flex-direction:column;gap:10px;margin-bottom:6px;}
+.cp-cmp-row{display:flex;align-items:center;gap:12px;}
+.cp-cmp-name{width:150px;flex-shrink:0;font-size:13px;font-weight:600;color:var(--navy);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;}
+.cp-cmp-bar-track{flex:1;height:18px;background:var(--hairline-faint);border-radius:3px;overflow:hidden;min-width:0;}
+.cp-cmp-bar{display:block;height:100%;background:var(--blue);border-radius:3px;transition:width .3s ease;min-width:2px;}
+.cp-cmp-row.live .cp-cmp-bar{background:var(--navy);}
+.cp-cmp-val{width:78px;flex-shrink:0;text-align:right;font-family:var(--fh);font-size:13px;font-weight:700;color:var(--navy);font-variant-numeric:tabular-nums;}
+.cp-spark-head{display:flex;justify-content:space-between;align-items:baseline;gap:12px;margin-bottom:18px;}
+.cp-spark-head h2{font-family:var(--fh);font-size:15px;font-weight:700;color:var(--navy);margin:0;}
+.cp-spark{display:flex;flex-direction:column;gap:0;}
+.cp-spark-cols{position:relative;display:flex;align-items:flex-end;gap:14px;height:150px;padding:0 4px;}
+.cp-spark-plan{position:absolute;left:4px;right:4px;height:0;border-top:1.5px dashed var(--dash);z-index:2;}
+.cp-spark-plan::after{content:"plan";position:absolute;right:0;top:-15px;font-family:var(--fb);font-size:10px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--dash);}
+.cp-spark-col{position:relative;flex:1;height:100%;display:flex;align-items:flex-end;}
+.cp-spark-bar{width:100%;border-radius:3px 3px 0 0;transition:height .25s ease;}
+.cp-spark-bar.ahead{background:var(--grn);}
+.cp-spark-bar.behind{background:var(--blue);}
+.cp-spark-bar.empty{background:transparent;border:1px dashed var(--hairline);border-bottom:none;height:0;}
+.cp-spark-col.cur .cp-spark-bar{box-shadow:0 0 0 1.5px var(--navy);}
+.cp-spark-val{position:absolute;left:0;right:0;text-align:center;margin-bottom:4px;transform:translateY(-100%);font-family:var(--fh);font-size:11px;font-weight:700;color:var(--navy);font-variant-numeric:tabular-nums;z-index:3;}
+.cp-spark-labels{display:flex;gap:14px;padding:8px 4px 0;border-top:1px solid var(--hairline);}
+.cp-spark-labels span{flex:1;text-align:center;font-family:var(--fb);font-size:12px;font-weight:600;color:var(--label);}
+.cp-spark-labels span.cur{color:var(--navy);font-weight:700;}
 .cp-mix{display:flex;flex-direction:column;gap:11px;}
 .cp-mix-row{display:flex;align-items:center;gap:10px;}
 .cp-mix-label{font-family:var(--fb);width:38px;font-size:12px;font-weight:600;color:var(--navy);}
@@ -1880,13 +2188,43 @@ body{background:#fafbfc;}
 .cp-now{font-family:var(--fb);font-style:normal;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;background:var(--blue);color:#fff;padding:1px 5px;border-radius:var(--rc);margin-left:6px;vertical-align:middle;}
 .cp-qtable tr.now td{background:rgba(0,155,214,.05);}
 
+/* B2 — Commission Manifest: hidden on screen, the only thing shown in print */
+.cp-manifest{display:none;}
 @media print{
-  .cp-tabs,.cp-head-actions,.cp-add,.cp-mini,.cp-x,.cp-add-line,.cp-reset,.cp-range,.cp-chips,.cp-row-actions,.cp-acc-tools,.cp-search,.cp-card-actions,.cp-collapse,.cp-iconbtn,.cp-conf input[type=range]{display:none !important;}
-  .cp-root{width:auto;max-width:none;padding:0;}
-  .cp-hero,.cp-instr,.cp-stat.accent{-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+  /* hide the live app chrome entirely; print just the manifest */
+  .cp-header,.cp-meta,.cp-eyebrow,.cp-titlerow,.cp-settings,.cp-tabpanel,.cp-nudge,.cp-footer,.cp-toast,.cp-modal-backdrop{display:none !important;}
+  .cp-root{width:auto;max-width:none;padding:0;margin:0;}
   body,html,#root{background:#fff !important;}
-  .cp-grid,.cp-proj-controls{grid-template-columns:1fr 1fr;}
+  .cp-manifest{display:block !important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
+  @page{margin:14mm;}
 }
+.cp-mf-head{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;padding-bottom:14px;border-bottom:2px solid var(--navy);}
+.cp-mf-brand{display:flex;flex-direction:column;gap:2px;}
+.cp-mf-ft{font-family:var(--fh);font-size:13px;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--blue);}
+.cp-mf-doc{font-family:var(--fh);font-size:26px;font-weight:800;letter-spacing:-.02em;color:var(--navy);line-height:1.05;}
+.cp-mf-meta{display:grid;grid-template-columns:auto auto;gap:4px 22px;text-align:right;}
+.cp-mf-meta div{display:flex;flex-direction:column;}
+.cp-mf-meta span{font-family:var(--fb);font-size:9px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--label);}
+.cp-mf-meta b{font-family:var(--fh);font-size:12px;font-weight:700;color:var(--navy);}
+.cp-mf-cols{display:grid;grid-template-columns:1fr 1fr;gap:22px;margin-top:18px;}
+.cp-mf-block{break-inside:avoid;}
+.cp-mf-block.wide{margin-top:18px;}
+.cp-mf-block h3{font-family:var(--fh);font-size:13px;font-weight:700;letter-spacing:.04em;text-transform:uppercase;color:var(--navy);margin:0 0 8px;padding-bottom:5px;border-bottom:1px solid var(--hairline);}
+.cp-mf-block dl{margin:0;}
+.cp-mf-block dl>div{display:flex;justify-content:space-between;align-items:baseline;gap:12px;padding:4px 0;border-bottom:1px solid var(--hairline-faint);}
+.cp-mf-block dt{font-family:var(--fb);font-size:12px;color:var(--text-2);}
+.cp-mf-block dd{margin:0;font-family:var(--fh);font-size:13px;font-weight:700;color:var(--navy);font-variant-numeric:tabular-nums;}
+.cp-mf-block dl>div.hi dd{color:var(--grn-d);font-size:15px;}
+.cp-mf-bands{margin-top:8px;display:flex;flex-direction:column;gap:3px;}
+.cp-mf-band{display:flex;justify-content:space-between;font-family:var(--fb);font-size:11px;color:var(--text-2);background:var(--group-tint);padding:3px 8px;border-radius:3px;}
+.cp-mf-band b{font-family:var(--fh);color:var(--navy);}
+.cp-mf-table{width:100%;border-collapse:collapse;margin-top:2px;}
+.cp-mf-table th,.cp-mf-table td{font-family:var(--fb);font-size:11px;text-align:left;padding:6px 8px;border-bottom:1px solid var(--hairline);}
+.cp-mf-table th{font-size:9px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--label);background:var(--group-tint);}
+.cp-mf-table td{color:var(--navy);font-variant-numeric:tabular-nums;}
+.cp-mf-table .n{text-align:right;}
+.cp-mf-table tfoot td{font-family:var(--fh);font-weight:700;border-top:2px solid var(--navy);border-bottom:none;}
+.cp-mf-foot{margin-top:18px;padding-top:10px;border-top:1px solid var(--hairline);font-family:var(--fb);font-size:9.5px;line-height:1.5;color:var(--label);}
 
 @media(max-width:900px){
   .cp-meta{grid-template-columns:1fr 1fr;}
