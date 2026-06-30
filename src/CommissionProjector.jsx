@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback } from "react";
 import { supabase } from "./supabaseClient";
 
 /* ───────────────────────── constants ───────────────────────── */
@@ -88,12 +88,26 @@ function repIdentity(user) {
 /* Supabase is the source of truth; localStorage is an offline mirror so the
    app can open (and keep your last figures) even when Supabase is unreachable. */
 const LS_PREFIX = "cp-state:";
+// Sticky marker: set while the local mirror holds edits that never reached
+// Supabase, so a later load prefers the mirror instead of clobbering it with a
+// stale remote row. Persisted (not just in-memory) so it survives a tab close
+// between an offline edit and the next reconnect.
+const LS_PENDING_PREFIX = "cp-pending:";
 function readLocal(uid) {
   try { const raw = localStorage.getItem(LS_PREFIX + uid); return raw ? JSON.parse(raw) : null; }
   catch { return null; }
 }
 function writeLocal(uid, state) {
   try { localStorage.setItem(LS_PREFIX + uid, JSON.stringify(state)); } catch { /* quota / disabled */ }
+}
+function markPending(uid, pending) {
+  try {
+    if (pending) localStorage.setItem(LS_PENDING_PREFIX + uid, "1");
+    else localStorage.removeItem(LS_PENDING_PREFIX + uid);
+  } catch { /* quota / disabled */ }
+}
+function hasPending(uid) {
+  try { return localStorage.getItem(LS_PENDING_PREFIX + uid) === "1"; } catch { return false; }
 }
 async function currentUserId() {
   // getSession reads the cached session from localStorage — no network round-trip,
@@ -106,45 +120,75 @@ async function currentUserId() {
 // out before it can re-write the localStorage mirror we're about to clear (or
 // fire a doomed upsert). Reset on each fresh load (i.e. a new sign-in/mount).
 let signingOut = false;
+// The updated_at of the remote row we last loaded or wrote. Lets a save detect
+// when another device/tab has changed the row since (optimistic-concurrency
+// check) so the overwrite is surfaced to the user instead of being silent.
+let lastSyncedAt = null;
 
 async function loadState() {
   signingOut = false;
+  lastSyncedAt = null;
   const uid = await currentUserId();
   if (!uid) return null;
+  // Unsynced offline edits: the mirror is newer than remote, so prefer it (and let
+  // the normal save flow re-push it) rather than overwriting it with a stale row.
+  if (hasPending(uid)) {
+    const local = readLocal(uid);
+    if (local) return { state: local, pending: true };
+  }
   try {
     const { data, error } = await supabase
       .from("projector_state")
-      .select("data")
+      .select("data, updated_at")
       .eq("user_id", uid)
       .maybeSingle();
     if (error) throw error;
     if (data) {
       writeLocal(uid, data.data); // refresh the offline mirror
-      return data.data; // -> { accounts, settings, proj, actuals, scenarios }
+      markPending(uid, false);    // remote is authoritative now
+      lastSyncedAt = data.updated_at || null;
+      return { state: data.data, pending: false }; // state -> { accounts, settings, proj, actuals, scenarios }
     }
     // no remote row yet — fall through to any local mirror
   } catch {
     /* offline / unreachable — fall back to the mirror below */
   }
-  return readLocal(uid);
+  const local = readLocal(uid);
+  return local ? { state: local, pending: hasPending(uid) } : null;
 }
 
-// Returns "remote" (saved to Supabase), "local" (mirror only — offline),
-// "auth" (no valid session — token expired or signed out; NOT saved remotely),
-// or false (sign-out in progress).
+// Returns "remote" (saved to Supabase), "conflict" (saved, but the remote had
+// been changed by another device since we last synced — overwrite surfaced to the
+// user), "local" (mirror only — offline), "auth" (no valid session; NOT saved
+// remotely), or false (sign-out in progress).
 async function saveState(state) {
   if (signingOut) return false;
   const uid = await currentUserId();
   if (!uid) return "auth";
-  writeLocal(uid, state); // always mirror locally first
+  writeLocal(uid, state);   // always mirror locally first
+  markPending(uid, true);   // assume unsynced until the remote write confirms
   try {
+    // Optimistic-concurrency check: has the remote row moved since we last synced?
+    // Best-effort only — a failure here must not block the write below.
+    let conflict = false;
+    try {
+      const { data: cur } = await supabase
+        .from("projector_state").select("updated_at").eq("user_id", uid).maybeSingle();
+      conflict = !!(cur && lastSyncedAt && cur.updated_at !== lastSyncedAt);
+    } catch { /* ignore — proceed to write */ }
+    const ts = new Date().toISOString();
     const { error } = await supabase
       .from("projector_state")
-      .upsert({ user_id: uid, data: state, updated_at: new Date().toISOString() });
-    if (!error) return "remote";
+      .upsert({ user_id: uid, data: state, updated_at: ts });
+    if (!error) {
+      lastSyncedAt = ts;
+      markPending(uid, false);
+      return conflict ? "conflict" : "remote";
+    }
     // An error could be a network blip OR an expired/invalid session. Check the
     // session so the UI can prompt re-auth instead of falsely claiming the edit
-    // was "saved offline" when it will in fact never reach Supabase.
+    // was "saved offline" when it will in fact never reach Supabase. The pending
+    // marker stays set so the mirror is preferred on the next load.
     const { data } = await supabase.auth.getSession();
     return data?.session ? "local" : "auth";
   } catch {
@@ -158,7 +202,7 @@ async function signOutClearingMirror() {
   signingOut = true; // block any in-flight debounced save from re-seeding the mirror
   try {
     const uid = await currentUserId();
-    if (uid) localStorage.removeItem(LS_PREFIX + uid);
+    if (uid) { localStorage.removeItem(LS_PREFIX + uid); markPending(uid, false); }
   } catch { /* ignore */ }
   await supabase.auth.signOut();
 }
@@ -541,12 +585,12 @@ export default function CommissionProjector({ user } = {}) {
   const [toast, setToast] = useState(null);
   const toastTimer = useRef(null);
   const toastAction = useRef(null);
-  const showToast = (message, opts = {}) => {
+  const showToast = useCallback((message, opts = {}) => {
     clearTimeout(toastTimer.current);
     toastAction.current = opts.onAction || null;
     setToast({ message, actionLabel: opts.actionLabel, kind: opts.kind || "info" });
     toastTimer.current = setTimeout(() => setToast(null), opts.duration || 6000);
-  };
+  }, []);
   const dismissToast = () => { clearTimeout(toastTimer.current); setToast(null); toastAction.current = null; };
   const runToastAction = () => { const fn = toastAction.current; dismissToast(); if (fn) fn(); };
   useEffect(() => () => {
@@ -565,14 +609,17 @@ export default function CommissionProjector({ user } = {}) {
   // the one upsert that would otherwise re-write the identical state we just loaded.
   const skipNextSave = useRef(false);
   useEffect(() => {
-    loadState().then((s) => {
+    loadState().then((res) => {
+      const s = res?.state;
       if (s && s.accounts) {
         setAccounts(s.accounts.map((a) => ({ included: true, confidence: 100, ...a })));
         setSettings(withTierIds({ ...DEFAULT_SETTINGS, ...(s.settings || {}) }));
         setProj({ ...DEFAULT_PROJ, ...(s.proj || {}) });
         setActuals(migrateActuals(s.actuals));
         setScenarios(Array.isArray(s.scenarios) ? s.scenarios : []);
-        skipNextSave.current = true; // loaded data is identical — don't echo it back
+        // Skip the echo-save only when the loaded data already matches remote. If it
+        // came from an unsynced local mirror, let the save flow re-push it.
+        skipNextSave.current = !res.pending;
       }
       setLoaded(true);
     });
@@ -584,7 +631,18 @@ export default function CommissionProjector({ user } = {}) {
     stateRef.current = { accounts, settings, proj, actuals, scenarios };
   });
   const pendingRef = useRef(false);
-  const flush = (ok) => { setPersisted(ok); pendingRef.current = ok === "local"; };
+  const flush = useCallback((ok) => {
+    if (ok === "conflict") {
+      // The write succeeded, but it overwrote a row another device had changed.
+      // Show it as saved, and warn so the overwrite isn't silent.
+      setPersisted("remote");
+      pendingRef.current = false;
+      showToast("This projection was also changed on another device — your version was just saved over it.", { kind: "warn", duration: 8000 });
+      return;
+    }
+    setPersisted(ok);
+    pendingRef.current = ok === "local";
+  }, [showToast]);
 
   useEffect(() => {
     if (!loaded) return;
@@ -593,14 +651,14 @@ export default function CommissionProjector({ user } = {}) {
       saveState(stateRef.current).then(flush);
     }, 800);
     return () => clearTimeout(t);
-  }, [accounts, settings, proj, actuals, scenarios, loaded]);
+  }, [accounts, settings, proj, actuals, scenarios, loaded, flush]);
 
   // When connectivity returns, push any offline edits to Supabase.
   useEffect(() => {
     const onReconnect = () => { if (pendingRef.current) saveState(stateRef.current).then(flush); };
     window.addEventListener("online", onReconnect);
     return () => window.removeEventListener("online", onReconnect);
-  }, []);
+  }, [flush]);
 
   const calc = useMemo(() => computeCalc(accounts, settings), [accounts, settings]);
   const projection = useMemo(() => computeProjection(calc, settings, proj), [calc, settings, proj]);
@@ -1236,12 +1294,12 @@ export default function CommissionProjector({ user } = {}) {
                       <input type="checkbox" checked={!excluded} onChange={() => toggleIncluded(acc.id)} />
                       <span>{excluded ? "Excluded — what-if only" : "Included in totals"}</span>
                     </label>
-                    <label className="cp-conf">
+                    <div className="cp-conf" role="group" aria-label="Account confidence percent">
                       <span>Confidence</span>
-                      <input type="range" min="0" max="100" step="5" value={conf} aria-label="Account confidence percent" onChange={(e) => setConfidence(acc.id, e.target.value)} />
-                      <input className="cp-conf-num" type="number" min="0" max="100" value={conf} aria-label="Account confidence percent" onChange={(e) => setConfidence(acc.id, e.target.value)} />
+                      <input type="range" min="0" max="100" step="5" value={conf} aria-label="Confidence slider" onChange={(e) => setConfidence(acc.id, e.target.value)} />
+                      <input className="cp-conf-num" type="number" min="0" max="100" value={conf} aria-label="Confidence percent" onChange={(e) => setConfidence(acc.id, e.target.value)} />
                       <em>%</em>
-                    </label>
+                    </div>
                   </div>
                   {!isCollapsed && (<>
                   <div className="cp-lines">
