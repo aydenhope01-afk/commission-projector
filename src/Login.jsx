@@ -111,6 +111,11 @@ export default function Login() {
     setStatus(error ? "error" : "sent");
   }
 
+  // NOTE: the domain check below is for fast UX feedback only. Real enforcement
+  // is the enforce_email_domain trigger on auth.users in supabase/setup.sql —
+  // without that trigger this check is bypassable by calling
+  // supabase.auth.signInWithOtp() directly. Keep ALLOWED_DOMAIN and the SQL
+  // allowlist in sync.
   function onSubmit(e) {
     e.preventDefault();
     const value = email.trim();
