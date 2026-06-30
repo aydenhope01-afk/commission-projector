@@ -164,6 +164,14 @@ async function signOutClearingMirror() {
 }
 
 const DEFAULT_SETTINGS = { base: 70000, car: 15000, multiplier: 2.5, rate: 10, target: 0, fiscalYearStart: 7, currency: "AUD", tiers: [] };
+// Ensure every accelerator band carries a stable id, so React list keys don't
+// fall back to the array index (which is unstable when bands are removed). Pure:
+// returns a new settings object; tierCommission ignores the id field entirely.
+function withTierIds(settings) {
+  if (!settings) return settings;
+  const tiers = Array.isArray(settings.tiers) ? settings.tiers.map((t) => (t && t.id ? t : { ...t, id: uid() })) : [];
+  return { ...settings, tiers };
+}
 const MONTHS = ["January", "February", "March", "April", "May", "June", "July", "August", "September", "October", "November", "December"];
 /* Fiscal-year + "today" awareness. fyStartMonth is 1-12. */
 function fiscalInfo(fyStartMonth, today = new Date()) {
@@ -531,21 +539,30 @@ export default function CommissionProjector({ user } = {}) {
   };
   const dismissToast = () => { clearTimeout(toastTimer.current); setToast(null); toastAction.current = null; };
   const runToastAction = () => { const fn = toastAction.current; dismissToast(); if (fn) fn(); };
-  useEffect(() => () => clearTimeout(toastTimer.current), []);
+  useEffect(() => () => {
+    clearTimeout(toastTimer.current);
+    // Resolve any dialog still awaiting a result (e.g. unmounted via sign-out
+    // mid-prompt) so the awaiting caller settles to cancel instead of hanging.
+    if (dialogResolve.current) { const r = dialogResolve.current; dialogResolve.current = null; r(null); }
+  }, []);
 
   // Apply currency/locale for this render before any formatting runs.
   applyCurrency(settings.currency);
   const fy = fiscalInfo(settings.fiscalYearStart);
   const rep = repIdentity(user);
 
+  // Set when we hydrate from existing data, so the debounced save effect can skip
+  // the one upsert that would otherwise re-write the identical state we just loaded.
+  const skipNextSave = useRef(false);
   useEffect(() => {
     loadState().then((s) => {
       if (s && s.accounts) {
         setAccounts(s.accounts.map((a) => ({ included: true, confidence: 100, ...a })));
-        setSettings({ ...DEFAULT_SETTINGS, ...(s.settings || {}) });
+        setSettings(withTierIds({ ...DEFAULT_SETTINGS, ...(s.settings || {}) }));
         setProj({ ...DEFAULT_PROJ, ...(s.proj || {}) });
         setActuals(migrateActuals(s.actuals));
         setScenarios(Array.isArray(s.scenarios) ? s.scenarios : []);
+        skipNextSave.current = true; // loaded data is identical — don't echo it back
       }
       setLoaded(true);
     });
@@ -561,6 +578,7 @@ export default function CommissionProjector({ user } = {}) {
 
   useEffect(() => {
     if (!loaded) return;
+    if (skipNextSave.current) { skipNextSave.current = false; return; }
     const t = setTimeout(() => {
       saveState(stateRef.current).then(flush);
     }, 800);
@@ -587,7 +605,7 @@ export default function CommissionProjector({ user } = {}) {
       const lastMult = cur.length ? Number(cur[cur.length - 1].atMult) || 1 : 1;
       const lastRate = cur.length ? Number(cur[cur.length - 1].rate) || 0 : Number(s.rate) || 0;
       const nextMult = Math.round((Math.max(1, lastMult) + 0.5) * 10) / 10;
-      return { ...s, tiers: [...cur, { atMult: nextMult, rate: lastRate + 5 }] };
+      return { ...s, tiers: [...cur, { id: uid(), atMult: nextMult, rate: lastRate + 5 }] };
     });
   const updateTier = (i, patch) =>
     setSettings((s) => ({ ...s, tiers: (Array.isArray(s.tiers) ? s.tiers : []).map((t, j) => (j === i ? { ...t, ...patch } : t)) }));
@@ -815,7 +833,7 @@ export default function CommissionProjector({ user } = {}) {
     const ok = await ask({ title: `Load "${sc.name}"?`, body: "This replaces your current working figures (accounts, settings & forecast).", confirmLabel: "Load" });
     if (!ok) return;
     setAccounts(sc.data.accounts || []);
-    setSettings({ ...DEFAULT_SETTINGS, ...(sc.data.settings || {}) });
+    setSettings(withTierIds({ ...DEFAULT_SETTINGS, ...(sc.data.settings || {}) }));
     setProj({ ...DEFAULT_PROJ, ...(sc.data.proj || {}) });
     setTab("year");
     showToast(`Loaded "${sc.name}"`, {
@@ -869,7 +887,7 @@ export default function CommissionProjector({ user } = {}) {
         const ok = await ask({ title: "Restore this backup?", body: "It replaces ALL current accounts, settings, and year-on-year history. Consider downloading a backup first.", confirmLabel: "Restore", danger: true });
         if (!ok) return;
         setAccounts((parsed.accounts || []).map((a) => ({ included: true, confidence: 100, ...a })));
-        setSettings({ ...DEFAULT_SETTINGS, ...(parsed.settings || {}) });
+        setSettings(withTierIds({ ...DEFAULT_SETTINGS, ...(parsed.settings || {}) }));
         setProj({ ...DEFAULT_PROJ, ...(parsed.proj || {}) });
         setActuals(migrateActuals(parsed.actuals));
         setScenarios(Array.isArray(parsed.scenarios) ? parsed.scenarios : []);
@@ -950,7 +968,7 @@ export default function CommissionProjector({ user } = {}) {
               <div className="cp-mf-bands">
                 <div className="cp-mf-band"><span>From the line ({A$(calc.threshold)})</span><b>{settings.rate || 0}%</b></div>
                 {tiers.map((t, i) => (
-                  <div className="cp-mf-band" key={i}><span>Above {A$(calc.threshold * (Number(t.atMult) || 0))} ({(Number(t.atMult) || 0)}×)</span><b>{Number(t.rate) || 0}%</b></div>
+                  <div className="cp-mf-band" key={t.id ?? i}><span>Above {A$(calc.threshold * (Number(t.atMult) || 0))} ({(Number(t.atMult) || 0)}×)</span><b>{Number(t.rate) || 0}%</b></div>
                 ))}
               </div>
             )}
@@ -1057,7 +1075,7 @@ export default function CommissionProjector({ user } = {}) {
               <span className="cp-tier-x" />
             </div>
             {tiers.map((t, i) => (
-              <div className="cp-tier-row" key={i}>
+              <div className="cp-tier-row" key={t.id ?? i}>
                 <span className="cp-tier-label">
                   Above
                   <input className="cp-tier-mult" type="number" step="0.1" min="1" placeholder="1.5" value={t.atMult ?? ""}
@@ -1127,7 +1145,7 @@ export default function CommissionProjector({ user } = {}) {
               {calc.gap > 0 ? (
                 <><b>{A$(calc.gap)}</b> to the commission line — about <b>{fcLboxes}</b> more weekly FCL {fcLboxes === 1 ? "box" : "boxes"} or <b>{roroUnits}</b> monthly RORO {roroUnits === 1 ? "unit" : "units"}.</>
               ) : (
-                <><b>{A$(calc.over)}</b> over the line, earning <b className="pos">{A$(calc.commission)}</b> at {settings.rate}%.</>
+                <><b>{A$(calc.over)}</b> over the line, earning <b className="pos">{A$(calc.commission)}</b> at {settings.rate}%{tiers.length ? " + accelerators" : ""}.</>
               )}
             </div>
             {targetAmt > 0 && (
@@ -1293,7 +1311,7 @@ export default function CommissionProjector({ user } = {}) {
                     ))}
                   </tbody>
                 </table>
-                <p className="cp-foot">YTD ({fy.label}, to Q{fy.quarter}): <b>{A$(calc.totalGP * (fy.quarter / 4))}</b> cumulative GP · <b className="pos">{A$2(Math.max(0, calc.totalGP * (fy.quarter / 4) - calc.threshold) * calc.rate)}</b> paid. Assumes even GP across the year; each payment lands ~6 weeks after the quarter closes.</p>
+                <p className="cp-foot">YTD ({fy.label}, to Q{fy.quarter}): <b>{A$(calc.totalGP * (fy.quarter / 4))}</b> cumulative GP · <b className="pos">{A$2(tierCommission(calc.totalGP * (fy.quarter / 4), calc.threshold, settings.rate, settings.tiers))}</b> paid. Assumes even GP across the year; each payment lands ~6 weeks after the quarter closes.</p>
               </div>
             </aside>
           </div>
@@ -1711,7 +1729,18 @@ export default function CommissionProjector({ user } = {}) {
         <div className="cp-modal-backdrop" onClick={() => closeDialog(dialog.input ? null : false)}>
           <div className="cp-modal" role="dialog" aria-modal="true" aria-labelledby="cp-modal-title"
             onClick={(e) => e.stopPropagation()}
-            onKeyDown={(e) => { if (e.key === "Escape") closeDialog(dialog.input ? null : false); }}>
+            onKeyDown={(e) => {
+              if (e.key === "Escape") { closeDialog(dialog.input ? null : false); return; }
+              // Trap Tab focus inside the dialog so keyboard users can't tab out
+              // to the (inert) page behind it.
+              if (e.key === "Tab") {
+                const f = e.currentTarget.querySelectorAll('button, input, [href], select, textarea, [tabindex]:not([tabindex="-1"])');
+                if (!f.length) return;
+                const first = f[0], last = f[f.length - 1];
+                if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+                else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+              }
+            }}>
             <h2 id="cp-modal-title" className="cp-modal-title">{dialog.title}</h2>
             {dialog.body && <p className="cp-modal-body">{dialog.body}</p>}
             {dialog.input && (
