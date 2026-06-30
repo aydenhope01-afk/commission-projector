@@ -234,7 +234,10 @@ const seedAccounts = () => [
    meaningful across projection years where the line moves with pay rises.
    With no valid tiers this reduces EXACTLY to the legacy flat calc:
    max(0, gp − threshold) × baseRate — so existing plans are unchanged. */
-function tierCommission(gp, threshold, baseRatePct, tiers) {
+function tierCommission(gpIn, threshold, baseRatePct, tiers) {
+  // Coerce gp to a finite number so corrupt/hand-edited data (e.g. a non-numeric
+  // cell value from a restored backup) yields $0 commission, never NaN.
+  const gp = Number.isFinite(Number(gpIn)) ? Number(gpIn) : 0;
   const baseRate = (Number(baseRatePct) || 0) / 100;
   const bands = (Array.isArray(tiers) ? tiers : [])
     .map((t) => ({ at: (Number(t.atMult) || 0) * threshold, rate: (Number(t.rate) || 0) / 100 }))
@@ -400,8 +403,15 @@ function computeYear(yearEntry, accounts, names, isCurrent, frac) {
     const orphan = !live;
     const name = live ? live.name : (names[id] || "Removed account");
     const cells = (entry.cells && entry.cells[id]) || emptyCells();
-    const forecast = entry.forecast && entry.forecast[id] != null ? Number(entry.forecast[id]) : 0;
-    const qv = QKEYS.map((k) => (cells[k] == null || cells[k] === "" ? null : Number(cells[k])));
+    const fc = entry.forecast && entry.forecast[id] != null ? Number(entry.forecast[id]) : 0;
+    const forecast = Number.isFinite(fc) ? fc : 0;
+    // Non-numeric/empty cells read as "not entered" (null). Number.isFinite also
+    // rejects NaN from corrupt data so it can't poison ytd/pace/variance.
+    const qv = QKEYS.map((k) => {
+      if (cells[k] == null || cells[k] === "") return null;
+      const n = Number(cells[k]);
+      return Number.isFinite(n) ? n : null;
+    });
     let sum = 0, hasAny = false;
     qv.forEach((v, i) => {
       if (v != null) { sum += v; qTotals[i] += v; hasAny = true; enteredFlags[i] = true; }
