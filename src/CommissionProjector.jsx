@@ -267,6 +267,11 @@ export default function CommissionProjector({ user } = {}) {
         // came from an unsynced local mirror, let the save flow re-push it.
         skipNextSave.current = !res.pending;
       }
+    }).catch(() => {
+      /* unexpected load failure — fall through to defaults */
+    }).finally(() => {
+      // Always leave the loading gate, even if the load throws, so the app can
+      // never get stuck on the "Loading…" screen.
       setLoaded(true);
     });
   }, []);
@@ -458,9 +463,17 @@ export default function CommissionProjector({ user } = {}) {
 
   const yearEntry = actuals.years ? actuals.years[activeYear] : null;
   const fyFrac = fy.frac;
+  // The current year's snapshot is seeded in an effect on first Actuals open.
+  // Until then, display against live comp/forecast so the KPIs show real numbers
+  // instead of flashing $0 for a frame. (snapshotAt/snapshotDrift below still use
+  // the real yearEntry, so they only react to an actually-frozen snapshot.)
+  const displayEntry = useMemo(
+    () => yearEntry || (isCurrentYear ? { comp: liveComp, forecast: liveForecast, cells: {} } : null),
+    [yearEntry, isCurrentYear, liveComp, liveForecast]
+  );
   const yearData = useMemo(
-    () => computeYear(yearEntry, accounts, names, isCurrentYear, fyFrac),
-    [yearEntry, accounts, names, isCurrentYear, fyFrac]
+    () => computeYear(displayEntry, accounts, names, isCurrentYear, fyFrac),
+    [displayEntry, accounts, names, isCurrentYear, fyFrac]
   );
   const history = useMemo(() => computeHistory(actuals, accounts, names), [actuals, accounts, names]);
   const yearKeys = useMemo(() => {
