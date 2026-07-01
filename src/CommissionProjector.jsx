@@ -1725,7 +1725,7 @@ body{background:#fafbfc;}
 /* ── account ledger card ── */
 .cp-card{background:#fff;border:1px solid var(--hairline);border-radius:var(--rf);overflow:hidden;margin-bottom:14px;}
 .cp-card-top{display:flex;align-items:center;gap:10px;padding:12px 20px;background:var(--group-tint);border-bottom:1px solid var(--hairline);}
-.cp-acc-name{font-family:var(--fh);flex:1;border:0;border-bottom:1px solid transparent;font-size:15px;font-weight:700;color:var(--navy);padding:2px 2px;background:none;}
+.cp-acc-name{font-family:var(--fh);flex:1;min-width:0;border:0;border-bottom:1px solid transparent;font-size:15px;font-weight:700;color:var(--navy);padding:2px 2px;background:none;}
 .cp-acc-name:focus{outline:none;border-bottom-color:var(--blue);}
 .cp-acc-total{font-family:var(--fh);font-size:15px;font-weight:700;color:var(--navy);font-variant-numeric:tabular-nums;}
 .cp-acc-total span,.cp-line-ann span{font-family:var(--fb);font-size:11px;font-weight:500;color:var(--label);margin-left:2px;}
