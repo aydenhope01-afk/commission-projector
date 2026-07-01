@@ -105,11 +105,16 @@ async function saveState(state) {
       conflict = !!(cur && lastSyncedAt && cur.updated_at !== lastSyncedAt);
     } catch { /* ignore — proceed to write */ }
     const ts = new Date().toISOString();
-    const { error } = await supabase
+    const { data: saved, error } = await supabase
       .from("projector_state")
-      .upsert({ user_id: uid, data: state, updated_at: ts });
+      .upsert({ user_id: uid, data: state, updated_at: ts })
+      .select("updated_at")
+      .single();
     if (!error) {
-      lastSyncedAt = ts;
+      // Store the timestamp exactly as Postgres serialises it (not our client
+      // string) so the next conflict check compares like-for-like. Otherwise the
+      // format/precision differs and every save looks like a conflict.
+      lastSyncedAt = saved?.updated_at || ts;
       markPending(uid, false);
       return conflict ? "conflict" : "remote";
     }
