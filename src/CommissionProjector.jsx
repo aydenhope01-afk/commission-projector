@@ -391,17 +391,34 @@ export default function CommissionProjector({ user } = {}) {
   const q = query.trim().toLowerCase();
   const visibleAccounts = q ? accounts.filter((a) => (a.name || "").toLowerCase().includes(q)) : accounts;
   const sorted = sort !== "custom";
-  const displayAccounts = !sorted ? visibleAccounts : visibleAccounts.slice().sort((a, b) => {
-    const gpA = calc.accTotals[a.id] || 0, gpB = calc.accTotals[b.id] || 0;
-    const nA = (a.name || "").toLowerCase(), nB = (b.name || "").toLowerCase();
-    switch (sort) {
-      case "gp-desc": return gpB - gpA;
-      case "gp-asc": return gpA - gpB;
-      case "name-asc": return nA.localeCompare(nB);
-      case "name-desc": return nB.localeCompare(nA);
-      default: return 0;
-    }
-  });
+  // Freeze the sort order: recompute the id order only when the sort mode changes
+  // or an account is added/removed (membership key) — NOT on a value/name edit —
+  // so the card you're editing doesn't jump. Deliberately excludes calc.accTotals
+  // and account values from the deps; the objects are looked up fresh below so
+  // edited figures still show live.
+  const accountIdKey = accounts.map((a) => a.id).join(",");
+  const orderIds = useMemo(() => {
+    if (!sorted) return null;
+    const cmp = (a, b) => {
+      const gpA = calc.accTotals[a.id] || 0, gpB = calc.accTotals[b.id] || 0;
+      const nA = (a.name || "").toLowerCase(), nB = (b.name || "").toLowerCase();
+      switch (sort) {
+        case "gp-desc": return gpB - gpA;
+        case "gp-asc": return gpA - gpB;
+        case "name-asc": return nA.localeCompare(nB);
+        case "name-desc": return nB.localeCompare(nA);
+        default: return 0;
+      }
+    };
+    return accounts.slice().sort(cmp).map((a) => a.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sort, sorted, accountIdKey]);
+  // Apply the frozen order (objects looked up fresh so edited values stay live).
+  const displayAccounts = useMemo(() => {
+    if (!sorted || !orderIds) return visibleAccounts;
+    const rank = new Map(orderIds.map((id, i) => [id, i]));
+    return visibleAccounts.slice().sort((a, b) => (rank.get(a.id) ?? 1e9) - (rank.get(b.id) ?? 1e9));
+  }, [visibleAccounts, sorted, orderIds]);
   const quickAdd = () => { const name = query.trim(); if (!name) return; addAccount(name); setQuery(""); };
   const allCollapsed = accounts.length > 0 && accounts.every((a) => collapsed.has(a.id));
 
@@ -638,6 +655,21 @@ export default function CommissionProjector({ user } = {}) {
   };
 
   const printView = () => { if (typeof window !== "undefined") window.print(); };
+
+  // Until the saved state has loaded, render a brief loading state rather than the
+  // default/seed data — otherwise returning users see the demo accounts flash for
+  // a split second before their real figures arrive.
+  if (!loaded) {
+    return (
+      <div className="cp-root">
+        <style>{CSS}</style>
+        <div style={{ minHeight: "70vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 16 }}>
+          <img src={ICON_SRC} alt="" width="40" height="40" style={{ opacity: 0.55 }} />
+          <span style={{ fontSize: 12, fontWeight: 600, letterSpacing: ".16em", textTransform: "uppercase", color: "var(--label)" }}>Loading…</span>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="cp-root">
