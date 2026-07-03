@@ -1,13 +1,16 @@
 # Commission Projector
 
-Hosted, single-user Commission Projector. The `CommissionProjector` component is
-the finished design and is reused verbatim — the only changes from the original
-artifact are the two storage helpers (now backed by Supabase) and an auth gate.
+Hosted, single-user Commission Projector for Freight Tasker sales reps: project
+qualifying GP against the commission line, track quarterly actuals year over
+year, model multi-year earnings, and compare saved scenarios.
 
 ## Stack
-- Vite + React (app shell)
+- Vite + React (app shell; UI in `src/CommissionProjector.jsx`)
+- `src/engine.js` — pure calculation engine (commission tiers, projections,
+  actuals rollups), framework-free and unit-tested
 - Supabase — magic-link auth + Postgres (synced storage, one JSON row per user)
 - Vercel — hosting
+- Vitest — test suite for the engine (`src/engine.test.js`)
 
 ## Local development
 1. Fill in `.env.local` with your Supabase project values:
@@ -18,66 +21,36 @@ artifact are the two storage helpers (now backed by Supabase) and an auth gate.
 2. `npm install`
 3. `npm run dev`
 
+## Tests
+```
+npm test         # run the suite once
+npm run test:watch
+```
+CI (`.github/workflows/ci.yml`) runs lint + tests + build on every push and PR.
+
 ## Supabase setup
-Run this in the Supabase SQL editor:
 
-```sql
-create table projector_state (
-  user_id uuid primary key references auth.users(id) on delete cascade,
-  data jsonb not null default '{}'::jsonb,
-  updated_at timestamptz not null default now()
-);
+**The single source of truth is [`supabase/setup.sql`](supabase/setup.sql).**
+Run its contents in the Supabase SQL editor (Dashboard → SQL Editor → New
+query). It is idempotent — safe to re-run — and applies both security
+boundaries the app depends on:
 
-alter table projector_state enable row level security;
+1. **Row-Level Security on `projector_state`** — per-user select / insert /
+   update / delete policies (`auth.uid() = user_id`). Because the client ships
+   the anon key, these policies are the only thing preventing one signed-in
+   user from reading or overwriting another's data. The update policy's
+   `with check` clause is required: without it a user could rewrite their row's
+   `user_id` to another user's id.
+2. **Email-domain allowlist trigger on `auth.users`** — blocks account creation
+   for any address outside the allowed domains (`freighttasker.com`). The login
+   form's client-side domain check is UX-only and bypassable by calling the
+   Supabase API directly; the trigger is the real enforcement. To change the
+   allowed domains, edit the `allowed_domains` array in `setup.sql` AND
+   `ALLOWED_DOMAIN` in `src/Login.jsx`, then re-run the SQL. The trigger only
+   blocks *new* accounts — delete any pre-existing off-domain users in
+   Auth → Users.
 
-create policy "own row - select" on projector_state
-  for select using (auth.uid() = user_id);
-create policy "own row - upsert" on projector_state
-  for insert with check (auth.uid() = user_id);
-create policy "own row - update" on projector_state
-  for update using (auth.uid() = user_id)
-  with check (auth.uid() = user_id);
-```
-
-> The `with check` clause on the update policy is required for isolation: `using`
-> decides which rows a user may target, while `with check` constrains the *new*
-> row values. Without it, a user could update their own row and rewrite `user_id`
-> to another user's id, overwriting their data.
-
-Enable the **Email** auth provider (magic link is on by default).
-
-### Restrict sign-up to @freighttasker.com
-
-The login form rejects other domains client-side, but that can be bypassed by
-calling the Supabase API directly. To enforce it server-side, run this in the
-SQL editor — it blocks creation of any account whose email isn't `@freighttasker.com`:
-
-```sql
-create or replace function public.enforce_email_domain()
-returns trigger
-language plpgsql
-security definer
-set search_path = ''
-as $$
-begin
-  if new.email is null
-     or lower(split_part(new.email, '@', 2)) <> 'freighttasker.com' then
-    raise exception 'Only @freighttasker.com email addresses are allowed';
-  end if;
-  return new;
-end;
-$$;
-
-create trigger enforce_email_domain_trg
-  before insert on auth.users
-  for each row execute function public.enforce_email_domain();
-```
-
-Notes:
-- This blocks *new* account creation. Any non-`@freighttasker.com` users created
-  before the trigger was added still exist — delete them in Auth → Users if needed.
-- To change the allowed domain later, update both the SQL function above and
-  `ALLOWED_DOMAIN` in `src/Login.jsx`.
+Also enable the **Email** auth provider (magic link is on by default).
 
 ## Deploy (Vercel)
 1. Push to a private GitHub repo.
@@ -86,9 +59,29 @@ Notes:
 3. Deploy, then add the production URL to Supabase → Auth → URL configuration
    (Site URL + Redirect URLs).
 
-State is stored as a single JSON blob (`{ accounts, settings, proj }`) in one
-`projector_state` row, keyed to the logged-in user. Last-write-wins across devices.
-The signed-in user's offline mirror (`localStorage` key `cp-state:<uid>`) is cleared
+## Data model
+
+State is stored as a single JSON blob
+(`{ accounts, settings, proj, actuals, scenarios }`) in one `projector_state`
+row keyed to the logged-in user:
+
+- `accounts` — the working book: per-account freight lines (type / frequency /
+  profit), include toggle, confidence weighting
+- `settings` — compensation basis: base, car, threshold multiplier, commission
+  rate, accelerator tiers, fiscal-year start, currency, commission target
+- `proj` — multi-year assumptions: retention, new business + growth, pay rise,
+  NPV discount
+- `actuals` — per-year frozen snapshots (comp + forecast) and per-account
+  quarterly realised GP
+- `scenarios` — named snapshots of `{ accounts, settings, proj }` for
+  side-by-side comparison
+
+Sync behaviour: Supabase is the source of truth; a `localStorage` mirror
+(`cp-state:<uid>`) keeps the app usable offline. Edits that never reached
+Supabase are flagged (`cp-pending:<uid>`) so a later load prefers the mirror
+and re-pushes it instead of overwriting it with a stale remote row. Writes are
+last-write-wins across devices, but a save that overwrites a row changed
+elsewhere since the last sync surfaces a warning toast. The mirror is cleared
 on sign-out so figures don't linger on a shared device.
 
 ## Security headers
