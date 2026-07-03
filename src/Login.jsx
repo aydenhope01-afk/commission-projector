@@ -21,7 +21,7 @@ const CSS = `
 
 /* ── left: navy instrument ── */
 .lgx-left{background:var(--navy);color:#fff;position:relative;overflow:hidden;display:flex;flex-direction:column;justify-content:space-between;padding:48px 56px;}
-.lgx-watermark{position:absolute;right:-130px;top:-120px;width:460px;height:460px;filter:brightness(0) invert(1);opacity:.05;pointer-events:none;}
+.lgx-watermark{position:absolute;right:-130px;top:-120px;width:460px;height:460px;filter:brightness(0) invert(1);opacity:.05;pointer-events:none;transform:translateZ(0);will-change:transform;}
 .lgx-logo{display:flex;align-items:center;gap:11px;position:relative;z-index:1;}
 .lgx-logo span{font-size:23px;font-weight:700;letter-spacing:-.01em;}
 .lgx-logo img{width:31px;height:31px;display:block;filter:brightness(0) invert(1);}

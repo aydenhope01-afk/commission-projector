@@ -1824,7 +1824,7 @@ body{background:#fafbfc;}
 /* ── title + tabs ── */
 .cp-eyebrow{font-family:var(--fb);font-size:12px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:var(--blue-text);margin-bottom:7px;}
 .cp-titlerow{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:10px;}
-.cp-tabbar{position:sticky;top:0;z-index:60;display:flex;justify-content:flex-end;background:var(--field);padding:10px 0;margin-bottom:22px;border-bottom:1px solid var(--hairline-faint);}
+.cp-tabbar{position:sticky;top:0;z-index:60;display:flex;justify-content:flex-end;background:var(--field);padding:10px 0;margin-bottom:22px;border-bottom:1px solid var(--hairline-faint);will-change:transform;}
 .cp-title{font-family:var(--fh);font-size:44px;font-weight:800;letter-spacing:-.025em;margin:0;color:var(--navy);line-height:1;}
 .cp-tabs{display:flex;border:1px solid var(--hairline);border-radius:var(--rc);overflow:hidden;}
 .cp-tabs button{font-family:var(--fb);border:0;border-left:1px solid var(--hairline);background:var(--card);padding:9px 16px;font-size:13px;font-weight:500;color:var(--text-2);cursor:pointer;transition:background .15s ease,color .15s ease;}
@@ -1860,7 +1860,7 @@ body{background:#fafbfc;}
 /* ── hero: instrument + readouts ── */
 .cp-hero{display:grid;grid-template-columns:1.15fr .85fr;border:1px solid var(--navy);border-radius:var(--rf);overflow:hidden;margin-bottom:22px;}
 .cp-instr{background:var(--navy);color:#fff;padding:30px 34px;position:relative;overflow:hidden;border-right:1px solid var(--navy);}
-.cp-instr-mark{position:absolute;right:-50px;top:-50px;width:300px;height:300px;filter:brightness(0) invert(1);opacity:.05;pointer-events:none;}
+.cp-instr-mark{position:absolute;right:-50px;top:-50px;width:300px;height:300px;filter:brightness(0) invert(1);opacity:.05;pointer-events:none;transform:translateZ(0);will-change:transform;}
 .cp-instr-label{font-size:12px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:var(--on-navy-label);margin-bottom:6px;position:relative;z-index:1;}
 .cp-gauge{display:flex;align-items:center;gap:26px;position:relative;z-index:1;}
 .cp-gauge svg{display:block;flex-shrink:0;}
@@ -1921,7 +1921,7 @@ body{background:#fafbfc;}
 .cp-add.big{display:block;margin:12px auto 0;}
 
 /* ── account ledger card ── */
-.cp-card{background:var(--card);border:1px solid var(--hairline);border-radius:var(--rf);overflow:hidden;margin-bottom:14px;}
+.cp-card{background:var(--card);border:1px solid var(--hairline);border-radius:var(--rf);overflow:hidden;margin-bottom:14px;content-visibility:auto;contain-intrinsic-size:auto 250px;}
 .cp-card-top{display:flex;align-items:center;gap:10px;padding:12px 20px;background:var(--group-tint);border-bottom:1px solid var(--hairline);}
 .cp-acc-name{font-family:var(--fh);flex:1;min-width:0;border:0;border-bottom:1px solid transparent;font-size:15px;font-weight:700;color:var(--navy);padding:2px 2px;background:none;}
 .cp-acc-name:focus{outline:none;border-bottom-color:var(--blue);}
