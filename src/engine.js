@@ -145,9 +145,12 @@ export function fyLabelFor(startYear, fyStartMonth) {
   if (m === 0) return `${startYear}`;
   return `FY${String(startYear).slice(2)}/${String(startYear + 1).slice(2)}`;
 }
+// `example: true` marks the seed data so the UI can flag it as demo figures for
+// first-run users; the flag is cleared the moment the account is renamed or its
+// lines are edited (i.e. once it becomes real data).
 export const seedAccounts = () => [
-  { id: uid(), name: "Weekly China importer", lines: [{ id: uid(), type: "FCL", freq: "weekly", profit: 500 }] },
-  { id: uid(), name: "Machinery client", lines: [{ id: uid(), type: "RORO", freq: "monthly", profit: 1500 }] },
+  { id: uid(), name: "Weekly China importer", example: true, lines: [{ id: uid(), type: "FCL", freq: "weekly", profit: 500 }] },
+  { id: uid(), name: "Machinery client", example: true, lines: [{ id: uid(), type: "RORO", freq: "monthly", profit: 1500 }] },
 ];
 
 /* ───────────────────────── engine (pure) ───────────────────────── */

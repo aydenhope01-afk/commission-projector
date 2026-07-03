@@ -152,12 +152,50 @@ function Logo() {
   );
 }
 
+/* ── animation: tween a number toward its target ──────────────────
+   Starts at 0 on mount (so gauges/readouts sweep in) and re-tweens on every
+   change. Under prefers-reduced-motion it snaps instantly. */
+const REDUCED_MOTION = () =>
+  typeof window !== "undefined" && window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+function useTween(target, dur = 450) {
+  const [v, setV] = useState(0);
+  const curRef = useRef(0);
+  useEffect(() => {
+    const t = Number.isFinite(target) ? target : 0;
+    if (REDUCED_MOTION() || Math.abs(t - curRef.current) < 1e-9) {
+      curRef.current = t; setV(t); return;
+    }
+    const from = curRef.current;
+    const t0 = performance.now();
+    let raf;
+    const step = (now) => {
+      const p = Math.min(1, (now - t0) / dur);
+      const e = 1 - Math.pow(1 - p, 3); // easeOutCubic
+      const val = from + (t - from) * e;
+      curRef.current = val; setV(val);
+      if (p < 1) raf = requestAnimationFrame(step);
+    };
+    raf = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf);
+  }, [target, dur]);
+  return v;
+}
+/* Animated currency figure — counts toward the new value on change. */
+function AnimMoney({ value }) {
+  return <>{A$(useTween(Number(value) || 0))}</>;
+}
+
 /* ───────────────────────── compass gauge ─────────────────────────
    The signature "heading to the commission line" instrument. The arc + needle
    map qualifyingGP ÷ threshold across a 180° sweep (left = $0, right = threshold).
    Arc/needle stay azure below the line and switch to green once over. */
 function Gauge({ total, threshold }) {
-  const ratio = threshold > 0 ? Math.max(0, Math.min(1, total / threshold)) : 0;
+  const targetRatio = threshold > 0 ? Math.max(0, Math.min(1, total / threshold)) : 0;
+  // The arc clamps at 100%, but the readout shows the TRUE percentage — being
+  // over the line is the whole point, so 114% should read as 114%, not 100%.
+  const targetPct = threshold > 0 ? Math.max(0, (total / threshold) * 100) : 0;
+  const ratio = useTween(targetRatio, 650);   // needle sweeps in on load / edits
+  const animPct = useTween(Math.min(targetPct, 999), 650);
   const over = total >= threshold && threshold > 0;
   const accent = over ? "#72C481" : "#009BD6";
   const cx = 140, cy = 150, R = 120, NR = 112; // arc + needle radii
@@ -165,16 +203,18 @@ function Gauge({ total, threshold }) {
   const theta = (1 - ratio) * Math.PI;          // 0 → left (π), 1 → right (0)
   const ex = cx + R * Math.cos(theta), ey = cy - R * Math.sin(theta);
   const nx = cx + NR * Math.cos(theta), ny = cy - NR * Math.sin(theta);
-  // The arc clamps at 100%, but the readout shows the TRUE percentage — being
-  // over the line is the whole point, so 114% should read as 114%, not 100%.
-  const truePct = threshold > 0 ? Math.max(0, Math.round((total / threshold) * 100)) : 0;
-  const pct = truePct > 999 ? "999+" : truePct;
+  const pct = targetPct > 999 ? "999+" : Math.round(animPct);
   return (
     <div className="cp-gauge">
       <svg width="264" height="177" viewBox="0 0 280 188" aria-hidden="true">
         <path d="M20,150 A120,120 0 0 1 260,150" fill="none" stroke="#2F4C6E" strokeWidth="15" strokeLinecap="round" />
         {ratio > 0.001 && (
           <path d={`M20,150 A120,120 0 0 1 ${ex.toFixed(1)},${ey.toFixed(1)}`} fill="none" stroke={accent} strokeWidth="15" strokeLinecap="round" />
+        )}
+        {/* overshoot chevron: the arc physically stops at the line, so past
+            100% a small "»" beyond the end signals the overshoot */}
+        {over && total > threshold && (
+          <path d="M267,140 L275,150 L267,160" fill="none" stroke="#72C481" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round" />
         )}
         {/* needle emerges from behind the compass medallion, like a needle on its rose */}
         <line x1={cx} y1={cy} x2={nx.toFixed(1)} y2={ny.toFixed(1)} stroke="#fff" strokeWidth="3" strokeLinecap="round" />
@@ -316,6 +356,29 @@ export default function CommissionProjector({ user } = {}) {
     return () => window.removeEventListener("online", onReconnect);
   }, [flush]);
 
+  // Keyboard shortcuts: "/" focuses the account search, "n" adds an account,
+  // "1"–"4" switch tabs. Ignored while typing, with modifiers, or in a dialog.
+  useEffect(() => {
+    const order = ["year", "actuals", "multi", "scenarios"];
+    const onKey = (e) => {
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (e.target && e.target.closest && e.target.closest("input, select, textarea, [contenteditable]")) return;
+      if (document.querySelector(".cp-modal")) return;
+      if (e.key >= "1" && e.key <= "4") { setTab(order[Number(e.key) - 1]); return; }
+      if (e.key === "/") {
+        e.preventDefault();
+        setTab("year");
+        setTimeout(() => document.querySelector(".cp-search input")?.focus(), 50);
+      } else if (e.key === "n" || e.key === "N") {
+        e.preventDefault();
+        setTab("year");
+        setAccounts((a) => [...a, { id: uid(), name: "New account", included: true, confidence: 100, lines: [{ id: uid(), type: "FCL", freq: "weekly", profit: TYPE_DEFAULTS.FCL }] }]);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   const calc = useMemo(() => computeCalc(accounts, settings), [accounts, settings]);
   const projection = useMemo(() => computeProjection(calc, settings, proj), [calc, settings, proj]);
 
@@ -350,7 +413,7 @@ export default function CommissionProjector({ user } = {}) {
       onAction: () => setAccounts((prev) => { const next = prev.slice(); next.splice(Math.min(idx, next.length), 0, removed); return next; }),
     });
   }, [showToast]);
-  const renameAccount = useCallback((id, name) => setAccounts((a) => a.map((x) => (x.id === id ? { ...x, name } : x))), []);
+  const renameAccount = useCallback((id, name) => setAccounts((a) => a.map((x) => (x.id === id ? { ...x, name, example: false } : x))), []);
   const setConfidence = useCallback((id, v) =>
     setAccounts((a) => a.map((x) => (x.id === id ? { ...x, confidence: v === "" ? 100 : Math.max(0, Math.min(100, Number(v))) } : x))), []);
   const toggleIncluded = useCallback((id) =>
@@ -382,7 +445,7 @@ export default function CommissionProjector({ user } = {}) {
     setAccounts((a) =>
       a.map((x) =>
         x.id === aid
-          ? { ...x, lines: x.lines.map((l) => { if (l.id !== lid) return l; const next = { ...l, ...patch }; if (patch.type && patch.type !== l.type) next.profit = TYPE_DEFAULTS[patch.type]; return next; }) }
+          ? { ...x, example: false, lines: x.lines.map((l) => { if (l.id !== lid) return l; const next = { ...l, ...patch }; if (patch.type && patch.type !== l.type) next.profit = TYPE_DEFAULTS[patch.type]; return next; }) }
           : x
       )
     ), []);
@@ -453,6 +516,16 @@ export default function CommissionProjector({ user } = {}) {
   // Goal-seek: translate the GP still needed for the target into tangible volume.
   const targetFcl = Math.ceil(gpToTarget / (TYPE_DEFAULTS.FCL * 52)) || 0;
   const targetRoro = Math.ceil(gpToTarget / (TYPE_DEFAULTS.RORO * 12)) || 0;
+  // Next accelerator band: how much more GP unlocks the next marginal rate.
+  // Turns the tier config into a concrete carrot on the This-year tab.
+  const nextBand = useMemo(() => {
+    const bands = (Array.isArray(settings.tiers) ? settings.tiers : [])
+      .map((t) => ({ at: (Number(t.atMult) || 0) * calc.threshold, rate: Number(t.rate) || 0 }))
+      .filter((b) => Number.isFinite(b.at) && b.at > calc.threshold)
+      .sort((a, b) => a.at - b.at);
+    const next = bands.find((b) => b.at > calc.totalGP);
+    return next ? { ...next, toGo: next.at - calc.totalGP } : null;
+  }, [settings.tiers, calc.threshold, calc.totalGP]);
 
   /* ── actuals & pace (v2) ── */
   const curQ = fy.quarter; // current fiscal quarter
@@ -702,16 +775,23 @@ export default function CommissionProjector({ user } = {}) {
     await supabase.auth.signOut();
   };
 
-  // Until the saved state has loaded, render a brief loading state rather than the
-  // default/seed data — otherwise returning users see the demo accounts flash for
-  // a split second before their real figures arrive.
+  // Until the saved state has loaded, render a skeleton of the document (header
+  // band, meta strip, hero) rather than the default/seed data — otherwise
+  // returning users see the demo accounts flash before their real figures arrive.
   if (!loaded) {
     return (
       <div className="cp-root">
         <style>{CSS}</style>
-        <div style={{ minHeight: "70vh", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 16 }}>
-          <img src={ICON_SRC} alt="" width="40" height="40" style={{ opacity: 0.55 }} />
-          <span style={{ fontSize: 12, fontWeight: 600, letterSpacing: ".16em", textTransform: "uppercase", color: "var(--label)" }}>Loading…</span>
+        <div className="cp-skel" aria-label="Loading" role="status">
+          <div className="cp-skel-row">
+            <div className="cp-skel-box" style={{ width: 190, height: 34 }} />
+            <div className="cp-skel-box" style={{ width: 300, height: 34 }} />
+          </div>
+          <div className="cp-skel-box" style={{ height: 52, marginBottom: 30 }} />
+          <div className="cp-skel-box" style={{ width: 250, height: 14, marginBottom: 10 }} />
+          <div className="cp-skel-box" style={{ width: 420, height: 40, marginBottom: 26 }} />
+          <div className="cp-skel-box navy" style={{ height: 280, marginBottom: 22 }} />
+          <div className="cp-skel-box" style={{ height: 120 }} />
         </div>
       </div>
     );
@@ -816,6 +896,22 @@ export default function CommissionProjector({ user } = {}) {
           </table>
         </div>
 
+        {/* sign-off block — comp plans get manager approval in practice, and it
+            completes the "manifest" document metaphor on the printed page */}
+        <div className="cp-mf-sign">
+          <div className="cp-mf-sign-col">
+            <div className="cp-mf-sign-line" />
+            <span>Prepared by · {rep.name}</span>
+          </div>
+          <div className="cp-mf-sign-col">
+            <div className="cp-mf-sign-line" />
+            <span>Approved by · Sales Manager</span>
+          </div>
+          <div className="cp-mf-sign-col narrow">
+            <div className="cp-mf-sign-line" />
+            <span>Date</span>
+          </div>
+        </div>
         <p className="cp-mf-foot">Indicative projection generated by the Freight Tasker Commission Projector. Figures are estimates based on entered forecasts and current compensation settings, not a guarantee of earnings. Confidential.</p>
       </section>
 
@@ -831,6 +927,10 @@ export default function CommissionProjector({ user } = {}) {
       <div className="cp-eyebrow">Sales commission manifest</div>
       <div className="cp-titlerow">
         <h1 className="cp-title">Commission Projector</h1>
+      </div>
+      {/* Sticky: with a long account list the tabs used to scroll away; keeping
+          them pinned makes tab switching one tap from anywhere on the page. */}
+      <div className="cp-tabbar">
         <nav className="cp-tabs" role="tablist" aria-label="View" onKeyDown={onTabKey}>
           <button role="tab" id="cp-tab-year" aria-controls="cp-panel-year" aria-selected={tab === "year"} tabIndex={tab === "year" ? 0 : -1} className={tab === "year" ? "on" : ""} onClick={() => setTab("year")}>This year</button>
           <button role="tab" id="cp-tab-actuals" aria-controls="cp-panel-actuals" aria-selected={tab === "actuals"} tabIndex={tab === "actuals" ? 0 : -1} className={tab === "actuals" ? "on" : ""} onClick={() => setTab("actuals")}>Actuals &amp; pace</button>
@@ -912,7 +1012,7 @@ export default function CommissionProjector({ user } = {}) {
               <div className="cp-instr-headline">
                 <div>
                   <div className="cp-instr-eyebrow">Projected commission</div>
-                  <div className="cp-instr-comm">{A$(calc.commission)}</div>
+                  <div className="cp-instr-comm"><AnimMoney value={calc.commission} /></div>
                 </div>
                 <span className={"cp-linechip " + (calc.over > 0 ? "above" : "")}>{calc.over > 0 ? "Above line" : "Below line"}</span>
               </div>
@@ -920,15 +1020,15 @@ export default function CommissionProjector({ user } = {}) {
             <div className="cp-readouts">
               <div className="cp-readout">
                 <div><div className="cp-readout-label">Qualifying GP</div><div className="cp-readout-sub">committed</div></div>
-                <div className="cp-readout-val">{A$(calc.totalGP)}</div>
+                <div className="cp-readout-val"><AnimMoney value={calc.totalGP} /></div>
               </div>
               <div className="cp-readout">
                 <div><div className="cp-readout-label">Threshold · {settings.multiplier}×</div><div className="cp-readout-sub">package basis</div></div>
-                <div className="cp-readout-val">{A$(calc.threshold)}</div>
+                <div className="cp-readout-val"><AnimMoney value={calc.threshold} /></div>
               </div>
               <div className="cp-readout">
                 <div><div className="cp-readout-label">Total earnings</div><div className="cp-readout-sub">package + commission</div></div>
-                <div className="cp-readout-val">{A$(calc.total)}</div>
+                <div className="cp-readout-val"><AnimMoney value={calc.total} /></div>
               </div>
             </div>
           </section>
@@ -943,6 +1043,11 @@ export default function CommissionProjector({ user } = {}) {
                 <><b>{A$(calc.over)}</b> over the line, earning <b className="pos">{A$(calc.commission)}</b> at {settings.rate}%{tiers.length ? " + accelerators" : ""}.</>
               )}
             </div>
+            {nextBand && (
+              <div className="cp-target-caption">
+                Next accelerator: <b className="pos">{A$(nextBand.toGo)}</b> more GP unlocks the <b>{nextBand.rate}%</b> band (above {A$(nextBand.at)}).
+              </div>
+            )}
             {targetAmt > 0 && (
               <div className="cp-target-caption">
                 {calc.commission >= targetAmt ? (
@@ -1432,11 +1537,27 @@ export default function CommissionProjector({ user } = {}) {
                     <tr><td colSpan={7} className="muted" style={{ textAlign: "center", padding: "18px" }}>No saved scenarios yet — tweak your figures, then “Save current”.</td></tr>
                   )}
                   {scenarios.map((sc) => {
-                    const sCalc = computeCalc(sc.data.accounts || [], { ...DEFAULT_SETTINGS, ...(sc.data.settings || {}) });
-                    const sProj = computeProjection(sCalc, { ...DEFAULT_SETTINGS, ...(sc.data.settings || {}) }, { ...DEFAULT_PROJ, ...(sc.data.proj || {}) });
+                    const sSet = { ...DEFAULT_SETTINGS, ...(sc.data.settings || {}) };
+                    const sPrj = { ...DEFAULT_PROJ, ...(sc.data.proj || {}) };
+                    const sCalc = computeCalc(sc.data.accounts || [], sSet);
+                    const sProj = computeProjection(sCalc, sSet, sPrj);
+                    // Surface HOW this scenario differs from the live assumptions,
+                    // so the table shows inputs as well as outcomes.
+                    const diffs = [];
+                    if (sPrj.retention !== proj.retention) diffs.push(`retention ${sPrj.retention}%`);
+                    if ((sPrj.newGrowth ?? 100) !== (proj.newGrowth ?? 100)) diffs.push(`growth ${sPrj.newGrowth}%`);
+                    if ((sPrj.newPerYear ?? null) !== (proj.newPerYear ?? null)) diffs.push(`new GP ${sPrj.newPerYear == null ? "matches book" : A$(sPrj.newPerYear)}`);
+                    if ((Number(sPrj.payRise) || 0) !== (Number(proj.payRise) || 0)) diffs.push(`pay rise ${A$(sPrj.payRise)}`);
+                    if ((Number(sPrj.discount) || 0) !== (Number(proj.discount) || 0)) diffs.push(`discount ${sPrj.discount}%`);
+                    if ((Number(sSet.rate) || 0) !== (Number(settings.rate) || 0)) diffs.push(`rate ${sSet.rate}%`);
+                    if ((Number(sSet.multiplier) || 0) !== (Number(settings.multiplier) || 0)) diffs.push(`multiplier ${sSet.multiplier}×`);
+                    if ((sc.data.accounts || []).length !== accounts.length) diffs.push(`${(sc.data.accounts || []).length} accounts`);
                     return (
                       <tr key={sc.id}>
-                        <td><b>{sc.name}</b></td>
+                        <td>
+                          <b>{sc.name}</b>
+                          <span className="cp-sc-diffs">{diffs.length ? diffs.slice(0, 4).join(" · ") : "same assumptions as live"}</span>
+                        </td>
                         <td>{A$(sCalc.totalGP)}</td>
                         <td>{A$(sCalc.threshold)}</td>
                         <td className="pos">{A$(sCalc.commission)}</td>
@@ -1555,6 +1676,7 @@ const AccountCard = memo(function AccountCard({
       <div className="cp-card-top">
         <button className="cp-collapse" aria-label={isCollapsed ? "Expand account" : "Collapse account"} aria-expanded={!isCollapsed} onClick={() => onToggleCollapse(acc.id)}>{isCollapsed ? "▸" : "▾"}</button>
         <input className="cp-acc-name" aria-label="Account name" value={acc.name} onChange={(e) => onRename(acc.id, e.target.value)} />
+        {acc.example && <i className="cp-extag" title="Demo data — rename or edit to make it yours">example</i>}
         <div className="cp-acc-total">
           {A$(total)}<span>/yr</span>
           {conf < 100 && !excluded && <i className="cp-wtag" title="Confidence-weighted">≈ {A$(total * conf / 100)}</i>}
@@ -1650,7 +1772,7 @@ body{background:#fafbfc;}
   --field:#fafbfc; --backdrop:#eaeef2;
   --hairline:#d8e0e8; --hairline-faint:#eef2f6; --group-tint:#f1f5f9;
   --ink:#1c3857; --label:#5c6e80; --text-2:#556778; --muted:#5c6e80;
-  --dash:#6f7c8a; --saved-text:#3f7e50;
+  --dash:#6f7c8a; --saved-text:#3f7e50; --caption:#3a4a5c;
   --on-navy-track:#2f4c6e; --on-navy-label:#7fa8c9; --on-navy-muted:#9fbdd6;
   --amber:#d98a2b; --amber-text:#a8651a; --amber-bg:#fcf2e4;
   --danger:#c0492f;
@@ -1684,13 +1806,13 @@ body{background:#fafbfc;}
 .cp-save.warn{color:var(--amber-text);} .cp-save.warn .cp-save-dot{background:var(--amber);}
 .cp-save.off{color:var(--text-2);} .cp-save.off .cp-save-dot{background:var(--text-2);}
 .cp-save.err{color:var(--danger);} .cp-save.err .cp-save-dot{background:var(--danger);}
-.cp-btn{font-family:var(--fb);background:#fff;color:var(--navy);border:1px solid var(--navy);border-radius:var(--rc);padding:10px 18px;font-size:13px;font-weight:600;cursor:pointer;transition:background .15s ease,color .15s ease;}
+.cp-btn{font-family:var(--fb);background:var(--card);color:var(--navy);border:1px solid var(--navy);border-radius:var(--rc);padding:10px 18px;font-size:13px;font-weight:600;cursor:pointer;transition:background .15s ease,color .15s ease;}
 .cp-btn:hover{background:var(--group-tint);}
 .cp-btn.primary{background:var(--navy);color:#fff;}
 .cp-btn.primary:hover{background:var(--navy-d);}
 
 /* ── meta band ── */
-.cp-meta{display:grid;grid-template-columns:repeat(4,1fr);border:1px solid var(--navy);border-top:none;background:#fff;margin-bottom:30px;}
+.cp-meta{display:grid;grid-template-columns:repeat(4,1fr);border:1px solid var(--navy);border-top:none;background:var(--card);margin-bottom:30px;}
 .cp-meta-cell{padding:13px 18px;border-right:1px solid var(--hairline);}
 .cp-meta-cell:last-child{border-right:none;}
 .cp-meta-cell.status{display:flex;align-items:center;}
@@ -1701,15 +1823,16 @@ body{background:#fafbfc;}
 
 /* ── title + tabs ── */
 .cp-eyebrow{font-family:var(--fb);font-size:12px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:var(--blue-text);margin-bottom:7px;}
-.cp-titlerow{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:26px;}
+.cp-titlerow{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:10px;}
+.cp-tabbar{position:sticky;top:0;z-index:60;display:flex;justify-content:flex-end;background:var(--field);padding:10px 0;margin-bottom:22px;border-bottom:1px solid var(--hairline-faint);}
 .cp-title{font-family:var(--fh);font-size:44px;font-weight:800;letter-spacing:-.025em;margin:0;color:var(--navy);line-height:1;}
 .cp-tabs{display:flex;border:1px solid var(--hairline);border-radius:var(--rc);overflow:hidden;}
-.cp-tabs button{font-family:var(--fb);border:0;border-left:1px solid var(--hairline);background:#fff;padding:9px 16px;font-size:13px;font-weight:500;color:var(--text-2);cursor:pointer;transition:background .15s ease,color .15s ease;}
+.cp-tabs button{font-family:var(--fb);border:0;border-left:1px solid var(--hairline);background:var(--card);padding:9px 16px;font-size:13px;font-weight:500;color:var(--text-2);cursor:pointer;transition:background .15s ease,color .15s ease;}
 .cp-tabs button:first-child{border-left:none;}
 .cp-tabs button.on{background:var(--navy);color:#fff;font-weight:600;}
 
 /* ── settings ── */
-.cp-settings{margin-bottom:30px;background:#fff;border:1px solid var(--hairline);border-radius:var(--rf);padding:18px;display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:14px;align-items:end;}
+.cp-settings{margin-bottom:30px;background:var(--card);border:1px solid var(--hairline);border-radius:var(--rf);padding:18px;display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:14px;align-items:end;}
 .cp-tiers{grid-column:1/-1;border-top:1px solid var(--hairline-faint);padding-top:14px;}
 .cp-tiers-head{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px;flex-wrap:wrap;}
 .cp-tiers-head b{font-size:14px;color:var(--navy);}
@@ -1719,7 +1842,7 @@ body{background:#fafbfc;}
 .cp-tier-base{color:var(--label);font-weight:600;}
 .cp-tier-label{flex:1;display:flex;align-items:center;gap:7px;flex-wrap:wrap;}
 .cp-tier-label em{color:var(--label);font-style:normal;font-variant-numeric:tabular-nums;}
-.cp-tier-mult,.cp-tier-pct{font-family:var(--fb);border:1px solid var(--hairline);border-radius:var(--rc);padding:5px 7px;font-size:13px;font-weight:600;color:var(--navy);background:#fff;width:62px;text-align:right;font-variant-numeric:tabular-nums;}
+.cp-tier-mult,.cp-tier-pct{font-family:var(--fb);border:1px solid var(--hairline);border-radius:var(--rc);padding:5px 7px;font-size:13px;font-weight:600;color:var(--navy);background:var(--card);width:62px;text-align:right;font-variant-numeric:tabular-nums;}
 .cp-tier-mult:focus,.cp-tier-pct:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 3px rgba(0,155,214,.13);}
 .cp-tier-rate{font-weight:700;color:var(--navy);font-variant-numeric:tabular-nums;display:flex;align-items:center;gap:2px;min-width:64px;justify-content:flex-end;}
 .cp-tier-x{width:20px;display:flex;justify-content:center;flex-shrink:0;}
@@ -1732,7 +1855,7 @@ body{background:#fafbfc;}
 .cp-reset{font-family:var(--fb);margin-left:auto;background:none;border:1px solid var(--hairline);color:var(--text-2);border-radius:var(--rc);padding:6px 12px;font-size:12px;cursor:pointer;}
 .cp-reset:hover{border-color:#c0492f;color:#c0492f;}
 .cp-field{display:flex;flex-direction:column;gap:6px;font-family:var(--fb);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.07em;color:var(--label);}
-.cp-input{font-family:var(--fb);border:1px solid var(--hairline);border-radius:var(--rc);padding:10px;font-size:15px;font-weight:600;color:var(--navy);background:#fff;font-variant-numeric:tabular-nums;}
+.cp-input{font-family:var(--fb);border:1px solid var(--hairline);border-radius:var(--rc);padding:10px;font-size:15px;font-weight:600;color:var(--navy);background:var(--card);font-variant-numeric:tabular-nums;}
 
 /* ── hero: instrument + readouts ── */
 .cp-hero{display:grid;grid-template-columns:1.15fr .85fr;border:1px solid var(--navy);border-radius:var(--rf);overflow:hidden;margin-bottom:22px;}
@@ -1749,7 +1872,7 @@ body{background:#fafbfc;}
 .cp-instr-comm{font-family:var(--fh);font-size:46px;font-weight:800;color:var(--grn);line-height:1;font-variant-numeric:tabular-nums;}
 .cp-linechip{font-size:11px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--navy);background:var(--on-navy-label);padding:5px 10px;border-radius:var(--rc);}
 .cp-linechip.above{background:var(--grn);}
-.cp-readouts{display:flex;flex-direction:column;background:#fff;}
+.cp-readouts{display:flex;flex-direction:column;background:var(--card);}
 .cp-readout{flex:1;display:flex;justify-content:space-between;align-items:center;padding:22px 26px;border-bottom:1px solid var(--hairline);gap:12px;}
 .cp-readout:last-child{border-bottom:none;}
 .cp-readout-label{font-size:11px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--label);margin-bottom:5px;}
@@ -1757,7 +1880,7 @@ body{background:#fafbfc;}
 .cp-readout-val{font-family:var(--fh);font-size:34px;font-weight:800;color:var(--navy);font-variant-numeric:tabular-nums;}
 
 /* ── distance heading tape ── */
-.cp-track-wrap{border:1px solid var(--hairline);border-radius:var(--rf);background:#fff;padding:22px 26px;margin-bottom:30px;}
+.cp-track-wrap{border:1px solid var(--hairline);border-radius:var(--rf);background:var(--card);padding:22px 26px;margin-bottom:30px;}
 .cp-tape-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:26px;gap:12px;flex-wrap:wrap;}
 .cp-tape-title{font-size:11px;font-weight:600;letter-spacing:.14em;text-transform:uppercase;color:var(--navy);}
 .cp-tape-rem{font-family:var(--fh);font-size:15px;font-weight:700;color:var(--navy);font-variant-numeric:tabular-nums;}
@@ -1771,13 +1894,13 @@ body{background:#fafbfc;}
 .cp-thr{position:absolute;top:-9px;bottom:-9px;width:1px;background:var(--blue);}
 .cp-thr-flag{position:absolute;top:-17px;left:50%;transform:translateX(-50%);white-space:nowrap;font-family:var(--fb);font-size:10px;font-weight:700;letter-spacing:.06em;color:var(--blue);}
 .cp-track-scale{display:flex;justify-content:space-between;font-size:11px;color:var(--label);font-variant-numeric:tabular-nums;}
-.cp-track-caption{margin-top:16px;border-top:1px solid var(--hairline-faint);padding-top:14px;font-size:14px;color:#3a4a5c;font-weight:500;}
+.cp-track-caption{margin-top:16px;border-top:1px solid var(--hairline-faint);padding-top:14px;font-size:14px;color:var(--caption);font-weight:500;}
 .cp-track-caption b{color:var(--navy);font-weight:700;} .cp-track-caption .pos,.pos{color:var(--grn-d);}
 
 /* ── KPI strip (shared, other tabs) ── */
-.cp-stats{margin-bottom:22px;display:grid;grid-template-columns:repeat(4,1fr);gap:0;border:1px solid var(--hairline);border-radius:var(--rf);overflow:hidden;background:#fff;}
+.cp-stats{margin-bottom:22px;display:grid;grid-template-columns:repeat(4,1fr);gap:0;border:1px solid var(--hairline);border-radius:var(--rf);overflow:hidden;background:var(--card);}
 .cp-stats.three{grid-template-columns:repeat(3,1fr);}
-.cp-stat{background:#fff;border-right:1px solid var(--hairline);padding:18px 20px;}
+.cp-stat{background:var(--card);border-right:1px solid var(--hairline);padding:18px 20px;}
 .cp-stat:last-child{border-right:none;}
 .cp-stat.accent{position:relative;overflow:hidden;background:var(--navy);border-right-color:var(--navy);}
 .cp-stat.accent::after{content:"";position:absolute;right:-26px;bottom:-26px;width:118px;height:118px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='46' fill='none' stroke='%23ffffff' stroke-opacity='0.10' stroke-width='3'/%3E%3Cpath fill='%23ffffff' fill-opacity='0.10' fill-rule='evenodd' d='M50 12 L59.2 40.8 L88 50 L59.2 59.2 L50 88 L40.8 59.2 L12 50 L40.8 40.8 Z M43 50 a7 7 0 1 0 14 0 a7 7 0 1 0 -14 0 Z'/%3E%3C/svg%3E");background-size:contain;}
@@ -1798,7 +1921,7 @@ body{background:#fafbfc;}
 .cp-add.big{display:block;margin:12px auto 0;}
 
 /* ── account ledger card ── */
-.cp-card{background:#fff;border:1px solid var(--hairline);border-radius:var(--rf);overflow:hidden;margin-bottom:14px;}
+.cp-card{background:var(--card);border:1px solid var(--hairline);border-radius:var(--rf);overflow:hidden;margin-bottom:14px;}
 .cp-card-top{display:flex;align-items:center;gap:10px;padding:12px 20px;background:var(--group-tint);border-bottom:1px solid var(--hairline);}
 .cp-acc-name{font-family:var(--fh);flex:1;min-width:0;border:0;border-bottom:1px solid transparent;font-size:15px;font-weight:700;color:var(--navy);padding:2px 2px;background:none;}
 .cp-acc-name:focus{outline:none;border-bottom-color:var(--blue);}
@@ -1810,9 +1933,9 @@ body{background:#fafbfc;}
 .cp-line{display:flex;align-items:center;gap:7px;padding:8px 0;border-bottom:1px solid var(--hairline-faint);}
 .cp-line:last-child{border-bottom:none;}
 .cp-dot{width:6px;height:6px;border-radius:50%;flex:none;}
-.cp-sel{font-family:var(--fb);border:1px solid var(--hairline);border-radius:var(--rc);padding:8px;font-size:13px;font-weight:500;color:var(--navy);background:#fff;}
+.cp-sel{font-family:var(--fb);border:1px solid var(--hairline);border-radius:var(--rc);padding:8px;font-size:13px;font-weight:500;color:var(--navy);background:var(--card);}
 .cp-sel.type{font-weight:700;color:var(--navy);width:74px;}
-.cp-money-in{display:flex;align-items:center;border:1px solid var(--hairline);border-radius:var(--rc);padding:0 8px;background:#fff;}
+.cp-money-in{display:flex;align-items:center;border:1px solid var(--hairline);border-radius:var(--rc);padding:0 8px;background:var(--card);}
 .cp-money-in span{color:var(--label);font-size:13px;}
 .cp-money-in input{font-family:var(--fb);border:0;width:62px;padding:8px 4px;font-size:13px;font-weight:600;color:var(--navy);font-variant-numeric:tabular-nums;background:none;}
 .cp-money-in input:focus{outline:none;} .cp-money-in em{font-style:normal;font-size:10px;color:var(--label);}
@@ -1821,11 +1944,11 @@ body{background:#fafbfc;}
 .cp-tag{font-family:var(--fb);font-style:normal;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;background:var(--group-tint);color:var(--text-2);padding:2px 6px;border-radius:var(--rc);}
 .cp-add-line{font-family:var(--fb);margin:0 20px 10px;width:calc(100% - 40px);background:none;border:1px dashed var(--hairline);color:var(--blue-text);border-radius:var(--rc);padding:5px 12px;font-size:12px;font-weight:600;cursor:pointer;}
 .cp-add-line:hover{border-color:var(--blue);background:#f2fafe;}
-.cp-empty{background:#fff;border:1px dashed var(--hairline);border-radius:var(--rf);padding:28px;text-align:center;color:var(--text-2);font-size:14px;}
+.cp-empty{background:var(--card);border:1px dashed var(--hairline);border-radius:var(--rf);padding:28px;text-align:center;color:var(--text-2);font-size:14px;}
 
 /* ── rail ── */
 .cp-rail{display:flex;flex-direction:column;gap:18px;}
-.cp-panel{background:#fff;border:1px solid var(--hairline);border-top:2px solid var(--blue);border-radius:var(--rf);padding:18px 20px;}
+.cp-panel{background:var(--card);border:1px solid var(--hairline);border-top:2px solid var(--blue);border-radius:var(--rf);padding:18px 20px;}
 .cp-panel.solo{margin-top:18px;}
 .cp-panel h3{font-family:var(--fh);margin:0 0 14px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.14em;color:var(--navy);border-bottom:1px solid var(--navy);padding-bottom:10px;}
 .cp-cmp-title{font-family:var(--fh);margin:0 0 14px;font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.14em;color:var(--navy);border-bottom:1px solid var(--navy);padding-bottom:10px;}
@@ -1870,21 +1993,21 @@ body{background:#fafbfc;}
 /* ── projection controls (shared) ── */
 .cp-proj-controls{margin-bottom:22px;display:grid;grid-template-columns:1.1fr 1fr;gap:18px;align-items:stretch;}
 .cp-sliders{display:flex;flex-direction:column;gap:14px;}
-.cp-ret{background:#fff;border:1px solid var(--hairline);border-radius:var(--rf);padding:17px 19px;}
+.cp-ret{background:var(--card);border:1px solid var(--hairline);border-radius:var(--rf);padding:17px 19px;}
 .cp-ret-head{display:flex;justify-content:space-between;align-items:baseline;}
 .cp-ret-label{font-family:var(--fb);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.14em;color:var(--label);}
 .cp-ret-val{font-family:var(--fh);font-size:32px;font-weight:800;color:var(--navy);font-variant-numeric:tabular-nums;}
 .cp-range{width:100%;margin:9px 0 2px;accent-color:var(--blue);height:6px;}
 .cp-chips{display:flex;gap:7px;margin-top:11px;}
-.cp-chips button{font-family:var(--fb);flex:1;border:1px solid var(--hairline);background:#fff;color:var(--text-2);border-radius:var(--rc);padding:7px 0;font-size:12px;font-weight:600;cursor:pointer;}
+.cp-chips button{font-family:var(--fb);flex:1;border:1px solid var(--hairline);background:var(--card);color:var(--text-2);border-radius:var(--rc);padding:7px 0;font-size:12px;font-weight:600;cursor:pointer;}
 .cp-chips button.on{background:var(--navy);color:#fff;border-color:var(--navy);}
 .cp-ret-note{font-size:12px;color:var(--text-2);margin:13px 0 0;line-height:1.55;font-weight:500;}
-.cp-proj-fields{background:#fff;border:1px solid var(--hairline);border-radius:var(--rf);padding:17px 19px;display:grid;grid-template-columns:1fr 1fr;gap:15px;align-content:start;}
+.cp-proj-fields{background:var(--card);border:1px solid var(--hairline);border-radius:var(--rf);padding:17px 19px;display:grid;grid-template-columns:1fr 1fr;gap:15px;align-content:start;}
 .cp-mini{font-family:var(--fb);margin-top:6px;background:none;border:0;color:var(--blue);font-size:11px;font-weight:600;cursor:pointer;padding:0;text-align:left;text-transform:none;letter-spacing:0;}
 .cp-mini:hover{color:var(--navy);}
 
 /* ── multi-year chart (shared) ── */
-.cp-chart-wrap{margin-bottom:22px;background:#fff;border:1px solid var(--hairline);border-radius:var(--rf);padding:22px 18px 15px;}
+.cp-chart-wrap{margin-bottom:22px;background:var(--card);border:1px solid var(--hairline);border-radius:var(--rf);padding:22px 18px 15px;}
 .cp-chart{display:flex;align-items:flex-end;gap:14px;height:210px;}
 .cp-col{flex:1;display:flex;flex-direction:column;justify-content:flex-end;height:100%;}
 .cp-comm{font-family:var(--fh);text-align:center;font-size:12.5px;font-weight:700;color:var(--grn-d);height:18px;font-variant-numeric:tabular-nums;}
@@ -1892,7 +2015,7 @@ body{background:#fafbfc;}
 .cp-bar-carried{background:var(--navy);width:100%;}
 .cp-bar-new{background:var(--blue);width:100%;}
 .cp-bar-thr{position:absolute;left:-3px;right:-3px;height:0;border-top:2px dashed var(--grn-d);z-index:3;}
-.cp-bar-thr i{font-family:var(--fb);position:absolute;right:0;top:-16px;font-size:10px;font-weight:700;color:#35803f;font-style:normal;background:#fff;padding:0 4px;}
+.cp-bar-thr i{font-family:var(--fb);position:absolute;right:0;top:-16px;font-size:10px;font-weight:700;color:#35803f;font-style:normal;background:var(--card);padding:0 4px;}
 .cp-col-foot{text-align:center;margin-top:8px;display:flex;flex-direction:column;}
 .cp-col-foot b{font-family:var(--fh);font-size:13px;color:var(--navy);font-weight:800;font-variant-numeric:tabular-nums;}
 .cp-col-foot span{font-size:11px;color:var(--label);font-weight:600;}
@@ -1914,14 +2037,14 @@ body{background:#fafbfc;}
 /* ── actuals: year switcher ── */
 .cp-yearsbar{display:flex;align-items:center;justify-content:space-between;gap:14px;margin-bottom:20px;flex-wrap:wrap;}
 .cp-years{display:flex;flex-wrap:wrap;gap:6px;}
-.cp-years button{font-family:var(--fb);background:#fff;color:var(--navy);border:1px solid var(--hairline);border-radius:var(--rc);padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:7px;transition:background .15s ease,color .15s ease,border-color .15s ease;}
+.cp-years button{font-family:var(--fb);background:var(--card);color:var(--navy);border:1px solid var(--hairline);border-radius:var(--rc);padding:8px 14px;font-size:13px;font-weight:600;cursor:pointer;display:inline-flex;align-items:center;gap:7px;transition:background .15s ease,color .15s ease,border-color .15s ease;}
 .cp-years button:hover{border-color:var(--navy);background:var(--group-tint);}
 .cp-years button.on{background:var(--navy);color:#fff;border-color:var(--navy);}
 .cp-years-now{font-style:normal;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;background:var(--blue);color:#fff;padding:1px 5px;border-radius:var(--rc);}
 .cp-years button.on .cp-years-now{background:var(--grn);color:var(--navy);}
 
 /* ── actuals: frozen pay snapshot ── */
-.cp-snap{background:#fff;border:1px solid var(--hairline);border-top:2px solid var(--blue);border-radius:var(--rf);padding:18px 20px;margin-bottom:22px;}
+.cp-snap{background:var(--card);border:1px solid var(--hairline);border-top:2px solid var(--blue);border-radius:var(--rf);padding:18px 20px;margin-bottom:22px;}
 .cp-snap-head{display:flex;align-items:center;justify-content:space-between;gap:12px;margin-bottom:14px;flex-wrap:wrap;}
 .cp-snap-head .cp-eyebrow{margin-bottom:0;}
 .cp-snap-date{display:block;margin-top:5px;font-size:11px;font-weight:500;color:var(--text-2);letter-spacing:.01em;}
@@ -1936,7 +2059,7 @@ body{background:#fafbfc;}
 
 /* ── modal dialog ── */
 .cp-modal-backdrop{position:fixed;inset:0;background:rgba(20,32,48,0.42);display:flex;align-items:center;justify-content:center;padding:24px;z-index:1000;animation:cp-fade .12s ease;}
-.cp-modal{background:#fff;border-radius:var(--rf);box-shadow:0 16px 48px rgba(20,32,48,0.28);max-width:420px;width:100%;padding:24px;animation:cp-pop .14s ease;}
+.cp-modal{background:var(--card);border-radius:var(--rf);box-shadow:0 16px 48px rgba(20,32,48,0.28);max-width:420px;width:100%;padding:24px;animation:cp-pop .14s ease;}
 .cp-modal-title{font-family:var(--fh);margin:0 0 8px;font-size:18px;font-weight:800;color:var(--navy);}
 .cp-modal-body{margin:0 0 16px;font-size:14px;line-height:1.5;color:var(--text-2);}
 .cp-modal-input{width:100%;box-sizing:border-box;margin-bottom:18px;}
@@ -1975,7 +2098,7 @@ body{background:#fafbfc;}
 .cp-ledger tbody tr.orphan td.acc .nm{color:var(--text-2);}
 .cp-ledger td.cell{padding:0;position:relative;}
 .cp-ledger td.cell input{width:100%;border:0;background:none;padding:10px 14px;font-family:var(--fb);font-size:13px;font-weight:600;color:var(--navy);text-align:right;font-variant-numeric:tabular-nums;}
-.cp-ledger td.cell input:focus{outline:none;box-shadow:inset 0 0 0 2px var(--blue);background:#fff;}
+.cp-ledger td.cell input:focus{outline:none;box-shadow:inset 0 0 0 2px var(--blue);background:var(--card);}
 .cp-ledger td.cell.cur{background:rgba(0,155,214,.06);}
 .cp-ledger td.cell.future input{color:var(--dash);}
 .cp-ledger td.cell.future{background:repeating-linear-gradient(45deg,transparent,transparent 5px,rgba(184,194,204,.10) 5px,rgba(184,194,204,.10) 10px);}
@@ -2012,11 +2135,11 @@ body{background:#fafbfc;}
 .cp-count{font-family:var(--fb);font-size:13px;font-weight:500;color:var(--label);margin-left:6px;}
 .cp-acc-tools{display:flex;align-items:center;gap:14px;flex-wrap:wrap;}
 .cp-search{position:relative;display:flex;align-items:center;}
-.cp-search input{font-family:var(--fb);border:1px solid var(--hairline);border-radius:var(--rc);padding:8px 26px 8px 11px;font-size:13px;font-weight:500;color:var(--navy);background:#fff;width:190px;}
+.cp-search input{font-family:var(--fb);border:1px solid var(--hairline);border-radius:var(--rc);padding:8px 26px 8px 11px;font-size:13px;font-weight:500;color:var(--navy);background:var(--card);width:190px;}
 .cp-search input:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 3px rgba(0,155,214,.13);}
 .cp-search-clear{position:absolute;right:6px;background:none;border:0;color:var(--label);font-size:16px;line-height:1;cursor:pointer;padding:0 2px;}
 .cp-search-clear:hover{color:var(--navy);}
-.cp-sort{font-family:var(--fb);border:1px solid var(--hairline);border-radius:var(--rc);padding:8px 9px;font-size:13px;font-weight:500;color:var(--navy);background:#fff;cursor:pointer;}
+.cp-sort{font-family:var(--fb);border:1px solid var(--hairline);border-radius:var(--rc);padding:8px 9px;font-size:13px;font-weight:500;color:var(--navy);background:var(--card);cursor:pointer;}
 .cp-sort:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 3px rgba(0,155,214,.13);}
 .cp-collapse{font-family:var(--fb);background:none;border:0;color:var(--blue-text);font-size:13px;font-weight:600;line-height:1;cursor:pointer;padding:2px 4px;flex:none;}
 .cp-collapse:hover{color:var(--navy);}
@@ -2025,12 +2148,12 @@ body{background:#fafbfc;}
 .cp-iconbtn:hover{color:var(--navy);background:var(--group-tint);}
 .cp-iconbtn:disabled{opacity:.32;cursor:default;background:none;}
 .cp-wtag{font-family:var(--fb);font-style:normal;font-size:10px;font-weight:600;color:var(--blue-text);margin-left:7px;}
-.cp-card-meta{display:flex;align-items:center;gap:18px;padding:10px 20px;border-top:1px solid var(--hairline-faint);flex-wrap:wrap;background:#fff;}
+.cp-card-meta{display:flex;align-items:center;gap:18px;padding:10px 20px;border-top:1px solid var(--hairline-faint);flex-wrap:wrap;background:var(--card);}
 .cp-toggle{display:flex;align-items:center;gap:7px;font-family:var(--fb);font-size:12px;font-weight:600;color:var(--text-2);cursor:pointer;}
 .cp-toggle input{width:15px;height:15px;accent-color:var(--grn-d);cursor:pointer;}
 .cp-conf{display:flex;align-items:center;gap:8px;font-family:var(--fb);font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-2);}
 .cp-conf input[type=range]{width:96px;accent-color:var(--blue);cursor:pointer;}
-.cp-conf-num{font-family:var(--fb);width:58px;border:1px solid var(--hairline);border-radius:var(--rc);padding:5px 7px;font-size:12px;font-weight:600;color:var(--navy);background:#fff;font-variant-numeric:tabular-nums;}
+.cp-conf-num{font-family:var(--fb);width:58px;border:1px solid var(--hairline);border-radius:var(--rc);padding:5px 7px;font-size:12px;font-weight:600;color:var(--navy);background:var(--card);font-variant-numeric:tabular-nums;}
 .cp-conf-num:focus{outline:none;border-color:var(--blue);}
 .cp-conf em{font-style:normal;}
 .cp-card.excluded{opacity:.6;}
@@ -2051,11 +2174,36 @@ body{background:#fafbfc;}
 .cp-now{font-family:var(--fb);font-style:normal;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;background:#006e98;color:#fff;padding:1px 5px;border-radius:var(--rc);margin-left:6px;vertical-align:middle;}
 .cp-qtable tr.now td{background:rgba(0,155,214,.05);}
 
+/* ── skeleton loading ── */
+.cp-skel{padding-top:2px;}
+.cp-skel-row{display:flex;justify-content:space-between;gap:16px;margin:0 0 26px;}
+.cp-skel-box{background:var(--group-tint);border-radius:var(--rf);position:relative;overflow:hidden;}
+.cp-skel-box.navy{background:#1c3857;opacity:.92;}
+.cp-skel-box::after{content:"";position:absolute;inset:0;transform:translateX(-100%);background:linear-gradient(90deg,transparent,rgba(255,255,255,.4),transparent);animation:cp-shimmer 1.3s infinite;}
+.cp-skel-box.navy::after{background:linear-gradient(90deg,transparent,rgba(255,255,255,.07),transparent);}
+@keyframes cp-shimmer{to{transform:translateX(100%);}}
+@media (prefers-reduced-motion: reduce){.cp-skel-box::after{animation:none;}}
+
+/* ── example chip on seed accounts ── */
+.cp-extag{font-family:var(--fb);font-style:normal;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;background:var(--group-tint);color:var(--blue-text);border:1px solid var(--hairline);padding:2px 7px;border-radius:var(--rc);flex:none;}
+
+/* ── scenario assumption tags ── */
+.cp-sc-diffs{display:block;font-size:11px;font-weight:500;color:var(--label);margin-top:2px;max-width:34ch;}
+
+/* ── manifest signature block ── */
+.cp-mf-sign{display:flex;gap:28px;margin-top:26px;}
+.cp-mf-sign-col{flex:1;}
+.cp-mf-sign-col.narrow{flex:0 0 110px;}
+.cp-mf-sign-line{border-bottom:1px solid var(--navy);height:26px;margin-bottom:5px;}
+.cp-mf-sign-col span{font-family:var(--fb);font-size:9px;font-weight:700;letter-spacing:.07em;text-transform:uppercase;color:var(--label);}
+
 /* B2 — Commission Manifest: hidden on screen, the only thing shown in print */
 .cp-manifest{display:none;}
 @media print{
+  /* dark-mode users still print a light document: re-assert the light tokens */
+  .cp-root{--field:#fafbfc;--card:#ffffff;--navy:#1c3857;--ink:#1c3857;--label:#5c6e80;--text-2:#556778;--muted:#5c6e80;--hairline:#d8e0e8;--hairline-faint:#eef2f6;--group-tint:#f1f5f9;--grn-d:#479a5c;--blue-text:#0077a4;--dash:#6f7c8a;--caption:#3a4a5c;}
   /* hide the live app chrome entirely; print just the manifest */
-  .cp-header,.cp-meta,.cp-eyebrow,.cp-titlerow,.cp-settings,.cp-tabpanel,.cp-nudge,.cp-footer,.cp-toast,.cp-modal-backdrop{display:none !important;}
+  .cp-header,.cp-meta,.cp-eyebrow,.cp-titlerow,.cp-tabbar,.cp-settings,.cp-tabpanel,.cp-nudge,.cp-footer,.cp-toast,.cp-modal-backdrop{display:none !important;}
   .cp-root{width:auto;max-width:none;padding:0;margin:0;}
   body,html,#root{background:#fff !important;}
   .cp-manifest{display:block !important;-webkit-print-color-adjust:exact;print-color-adjust:exact;}
@@ -2130,5 +2278,49 @@ body{background:#fafbfc;}
   .cp-gauge{flex-wrap:wrap;gap:14px;}
   .cp-line{flex-wrap:wrap;} .cp-line-ann{margin-left:0;}
   .cp-proj-fields{grid-template-columns:1fr;}
+}
+
+/* ── dark mode ─────────────────────────────────────────────────────
+   Token flip keyed to the OS preference. --navy doubles as brand SURFACE and
+   ink in the light theme; here it becomes light ink, and the handful of
+   navy-as-surface elements are re-asserted below. Print stays light (see the
+   token re-assert inside @media print). */
+@media screen and (prefers-color-scheme: dark){
+  body{background:#0d1a26;}
+  .cp-root{
+    --field:#0d1a26; --backdrop:#0a141d; --card:#152838;
+    --hairline:#2b455c; --hairline-faint:#1e3448; --group-tint:#1b3143;
+    --navy:#d9e6f2; --ink:#e4edf5;
+    --label:#8fa8bd; --text-2:#a8c0d1; --muted:#8fa8bd; --dash:#7e93a6;
+    --caption:#b6cbda; --saved-text:#7ed492; --line:#2b455c;
+    --amber-text:#e8a656; --danger:#ef7b62;
+    --blue-text:#4fc3ea; --grn-d:#6cc481;
+  }
+  /* navy-as-surface, re-asserted (—-navy is now light ink) */
+  .cp-instr{background:#1c3857;}
+  .cp-skel-box.navy{background:#1c3857;}
+  .cp-btn.primary{background:#2b4a6b;border-color:#2b4a6b;}
+  .cp-btn.primary:hover{background:#35587e;}
+  .cp-tabs button.on{background:#2b4a6b;color:#fff;}
+  .cp-status{background:#2b4a6b;}
+  .cp-status.above{background:var(--grn);color:#12263a;}
+  .cp-linechip{color:#12263a;}
+  .cp-years button.on{background:#2b4a6b;border-color:#2b4a6b;color:#fff;}
+  .cp-years button.on .cp-years-now{color:#12263a;}
+  .cp-toast{background:#223c55;}
+  .cp-ledger thead th{background:#223c55;}
+  .cp-ledger thead th.cur{background:#2b4a6b;}
+  .cp-fill.navy{background:#5d87b3;}
+  .cp-cmp-row.live .cp-cmp-bar{background:#5d87b3;}
+  .cp-bar-carried{background:#35587e;}
+  .cp-bar-thr i{color:#7ed492;}
+  .cp-header{border-bottom-color:#2b455c;}
+  .cp-meta,.cp-hero{border-color:#2b455c;}
+  .cp-nudge{background:#33280f;border-color:#8a6a2f;}
+  .cp-modal-backdrop{background:rgba(0,0,0,.6);}
+  /* the compass mark is navy-on-transparent — invert it on dark surfaces */
+  .ft-logo-img,.ft-foot-img{filter:brightness(0) invert(1);opacity:.92;}
+  .cp-stat.accent{background:#1c3857;border-right-color:#1c3857;}
+  .cp-chips button.on{background:#2b4a6b;border-color:#2b4a6b;}
 }
 `;

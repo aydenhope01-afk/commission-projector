@@ -94,6 +94,26 @@ const CSS = `
   .lgx-watermark{width:300px;right:-90px;top:-90px;}
   .lgx-right{padding:32px 20px;}
 }
+
+/* ── dark mode (matches the app shell) ── */
+@media screen and (prefers-color-scheme: dark){
+  .lgx-grid{background:#0d1a26;}
+  .lgx-frame{background:#152838;border-color:#3a5a7d;}
+  .lgx-tab{border-color:#3a5a7d;}
+  .lgx-h2,.lgx-sent h2{color:#e4edf5;}
+  .lgx-intro,.lgx-note span,.lgx-sent p{color:#a8c0d1;}
+  .lgx-label{color:#8fa8bd;}
+  .lgx-field{background:#0f2231;border-color:#2b455c;}
+  .lgx-field input{color:#e4edf5;}
+  .lgx-root input::placeholder{color:#5f7890;}
+  .lgx-btn{background:#2b4a6b;border-color:#2b4a6b;}
+  .lgx-btn:hover:not(:disabled){background:#35587e;}
+  .lgx-below{color:#8fa8bd;}
+  .lgx-link.navy{color:#d9e6f2;}
+  .lgx-help.amber,.lgx-errbox span{color:#e8a656;}
+  .lgx-errbox{background:#33280f;border-color:#8a6a2f;}
+  .lgx-note{border-top-color:#1e3448;}
+}
 `;
 
 export default function Login() {
