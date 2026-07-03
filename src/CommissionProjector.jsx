@@ -165,7 +165,10 @@ function Gauge({ total, threshold }) {
   const theta = (1 - ratio) * Math.PI;          // 0 → left (π), 1 → right (0)
   const ex = cx + R * Math.cos(theta), ey = cy - R * Math.sin(theta);
   const nx = cx + NR * Math.cos(theta), ny = cy - NR * Math.sin(theta);
-  const pct = Math.round(ratio * 100);
+  // The arc clamps at 100%, but the readout shows the TRUE percentage — being
+  // over the line is the whole point, so 114% should read as 114%, not 100%.
+  const truePct = threshold > 0 ? Math.max(0, Math.round((total / threshold) * 100)) : 0;
+  const pct = truePct > 999 ? "999+" : truePct;
   return (
     <div className="cp-gauge">
       <svg width="264" height="177" viewBox="0 0 280 188" aria-hidden="true">
@@ -178,8 +181,10 @@ function Gauge({ total, threshold }) {
         <circle cx={nx.toFixed(1)} cy={ny.toFixed(1)} r="3.5" fill="#fff" />
         <circle cx={cx} cy={cy} r={rm} fill="#21406a" stroke={accent} strokeWidth="1.5" strokeOpacity="0.55" />
         <image href={ICON_SRC} x={cx - 17} y={cy - 17} width="34" height="34" style={{ filter: "brightness(0) invert(1)", opacity: 0.95 }} />
-        <text x="20" y="166" fill="#7FA8C9" fontSize="11" textAnchor="middle">{A$(0)}</text>
-        <text x="260" y="166" fill="#7FA8C9" fontSize="11" textAnchor="middle">{A$(threshold)}</text>
+        {/* end/start anchors keep long currency strings inside the viewBox
+            (middle-anchored labels clipped, e.g. "$212,500" past x=280) */}
+        <text x="8" y="166" fill="#7FA8C9" fontSize="11" textAnchor="start">{A$(0)}</text>
+        <text x="272" y="166" fill="#7FA8C9" fontSize="11" textAnchor="end">{A$(threshold)}</text>
       </svg>
       <div className="cp-gauge-read">
         <div className="cp-gauge-pct">{pct}<span>%</span></div>
@@ -846,7 +851,7 @@ export default function CommissionProjector({ user } = {}) {
               {MONTHS.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
             </select>
           </Field>
-          <Field label="Currency">
+          <Field label="Currency" wide>
             <select className="cp-input" value={settings.currency} onChange={(e) => setSettings((s) => ({ ...s, currency: e.target.value }))}>
               {CURRENCIES.map((c) => <option key={c.code} value={c.code}>{c.label}</option>)}
             </select>
@@ -1604,8 +1609,8 @@ function Stat({ label, value, sub, accent }) {
     </div>
   );
 }
-function Field({ label, children }) {
-  return (<label className="cp-field"><span>{label}</span>{children}</label>);
+function Field({ label, children, wide }) {
+  return (<label className={"cp-field" + (wide ? " wide" : "")}><span>{label}</span>{children}</label>);
 }
 function Money({ value, onChange }) {
   // Pass the empty string through while the field is being cleared so the input
@@ -1638,6 +1643,9 @@ const CSS = `
 body{background:#fafbfc;}
 .cp-root{
   --navy:#1c3857; --navy-d:#13283f; --blue:#009bd6; --blue-d:#0480b0;
+  /* azure for SMALL TEXT on light backgrounds — brand --blue is 3.15:1 on
+     white (fails WCAG AA 4.5:1); this reads as the same hue at 5.0:1 */
+  --blue-text:#0077a4;
   --grn:#72c481; --grn-d:#479a5c;
   --field:#fafbfc; --backdrop:#eaeef2;
   --hairline:#d8e0e8; --hairline-faint:#eef2f6; --group-tint:#f1f5f9;
@@ -1692,7 +1700,7 @@ body{background:#fafbfc;}
 .cp-status.above{background:var(--grn);color:var(--navy);}
 
 /* ── title + tabs ── */
-.cp-eyebrow{font-family:var(--fb);font-size:12px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:var(--blue);margin-bottom:7px;}
+.cp-eyebrow{font-family:var(--fb);font-size:12px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:var(--blue-text);margin-bottom:7px;}
 .cp-titlerow{display:flex;align-items:flex-end;justify-content:space-between;gap:16px;flex-wrap:wrap;margin-bottom:26px;}
 .cp-title{font-family:var(--fh);font-size:44px;font-weight:800;letter-spacing:-.025em;margin:0;color:var(--navy);line-height:1;}
 .cp-tabs{display:flex;border:1px solid var(--hairline);border-radius:var(--rc);overflow:hidden;}
@@ -1811,7 +1819,7 @@ body{background:#fafbfc;}
 .cp-money-in.wide input{width:100%;} .cp-money-in.wide{flex:1;}
 .cp-line-ann{font-family:var(--fh);margin-left:auto;font-size:14px;font-weight:700;color:var(--navy);display:flex;align-items:center;gap:6px;font-variant-numeric:tabular-nums;}
 .cp-tag{font-family:var(--fb);font-style:normal;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;background:var(--group-tint);color:var(--text-2);padding:2px 6px;border-radius:var(--rc);}
-.cp-add-line{font-family:var(--fb);margin:0 20px 14px;width:calc(100% - 40px);background:none;border:1px dashed var(--hairline);color:var(--blue);border-radius:var(--rc);padding:8px 12px;font-size:12px;font-weight:600;cursor:pointer;}
+.cp-add-line{font-family:var(--fb);margin:0 20px 10px;width:calc(100% - 40px);background:none;border:1px dashed var(--hairline);color:var(--blue-text);border-radius:var(--rc);padding:5px 12px;font-size:12px;font-weight:600;cursor:pointer;}
 .cp-add-line:hover{border-color:var(--blue);background:#f2fafe;}
 .cp-empty{background:#fff;border:1px dashed var(--hairline);border-radius:var(--rf);padding:28px;text-align:center;color:var(--text-2);font-size:14px;}
 
@@ -1884,12 +1892,12 @@ body{background:#fafbfc;}
 .cp-bar-carried{background:var(--navy);width:100%;}
 .cp-bar-new{background:var(--blue);width:100%;}
 .cp-bar-thr{position:absolute;left:-3px;right:-3px;height:0;border-top:2px dashed var(--grn-d);z-index:3;}
-.cp-bar-thr i{font-family:var(--fb);position:absolute;right:0;top:-15px;font-size:9px;font-weight:700;color:var(--grn-d);font-style:normal;background:#fff;padding:0 3px;}
+.cp-bar-thr i{font-family:var(--fb);position:absolute;right:0;top:-16px;font-size:10px;font-weight:700;color:#35803f;font-style:normal;background:#fff;padding:0 4px;}
 .cp-col-foot{text-align:center;margin-top:8px;display:flex;flex-direction:column;}
 .cp-col-foot b{font-family:var(--fh);font-size:13px;color:var(--navy);font-weight:800;font-variant-numeric:tabular-nums;}
 .cp-col-foot span{font-size:11px;color:var(--label);font-weight:600;}
 .cp-legend{display:flex;flex-wrap:wrap;gap:14px;margin-top:16px;border-top:1px solid var(--hairline-faint);padding-top:13px;}
-.cp-legend span{display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--text-2);font-weight:500;}
+.cp-legend span{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--text-2);font-weight:500;}
 .cp-legend i{width:12px;height:12px;display:inline-block;}
 .cp-legend i.line{height:0;border-top:2px dashed var(--grn-d);}
 
@@ -2010,13 +2018,13 @@ body{background:#fafbfc;}
 .cp-search-clear:hover{color:var(--navy);}
 .cp-sort{font-family:var(--fb);border:1px solid var(--hairline);border-radius:var(--rc);padding:8px 9px;font-size:13px;font-weight:500;color:var(--navy);background:#fff;cursor:pointer;}
 .cp-sort:focus{outline:none;border-color:var(--blue);box-shadow:0 0 0 3px rgba(0,155,214,.13);}
-.cp-collapse{font-family:var(--fb);background:none;border:0;color:var(--blue);font-size:13px;font-weight:600;line-height:1;cursor:pointer;padding:2px 4px;flex:none;}
+.cp-collapse{font-family:var(--fb);background:none;border:0;color:var(--blue-text);font-size:13px;font-weight:600;line-height:1;cursor:pointer;padding:2px 4px;flex:none;}
 .cp-collapse:hover{color:var(--navy);}
 .cp-card-actions{display:flex;align-items:center;gap:2px;flex:none;}
 .cp-iconbtn{background:none;border:0;color:var(--text-2);font-size:14px;line-height:1;cursor:pointer;padding:4px 5px;border-radius:var(--rc);}
 .cp-iconbtn:hover{color:var(--navy);background:var(--group-tint);}
 .cp-iconbtn:disabled{opacity:.32;cursor:default;background:none;}
-.cp-wtag{font-family:var(--fb);font-style:normal;font-size:10px;font-weight:600;color:var(--blue);margin-left:7px;}
+.cp-wtag{font-family:var(--fb);font-style:normal;font-size:10px;font-weight:600;color:var(--blue-text);margin-left:7px;}
 .cp-card-meta{display:flex;align-items:center;gap:18px;padding:10px 20px;border-top:1px solid var(--hairline-faint);flex-wrap:wrap;background:#fff;}
 .cp-toggle{display:flex;align-items:center;gap:7px;font-family:var(--fb);font-size:12px;font-weight:600;color:var(--text-2);cursor:pointer;}
 .cp-toggle input{width:15px;height:15px;accent-color:var(--grn-d);cursor:pointer;}
@@ -2040,7 +2048,7 @@ body{background:#fafbfc;}
 .cp-yearbar{font-size:11px;color:var(--text-2);background:var(--hairline-faint);border-radius:var(--rc);padding:6px 10px;margin-bottom:12px;position:relative;overflow:hidden;}
 .cp-yearbar-fill{position:absolute;left:0;top:0;bottom:0;background:rgba(0,155,214,.10);}
 .cp-yearbar-label{position:relative;z-index:1;font-family:var(--fb);font-weight:500;color:var(--text-2);}
-.cp-now{font-family:var(--fb);font-style:normal;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;background:var(--blue);color:#fff;padding:1px 5px;border-radius:var(--rc);margin-left:6px;vertical-align:middle;}
+.cp-now{font-family:var(--fb);font-style:normal;font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;background:#006e98;color:#fff;padding:1px 5px;border-radius:var(--rc);margin-left:6px;vertical-align:middle;}
 .cp-qtable tr.now td{background:rgba(0,155,214,.05);}
 
 /* B2 — Commission Manifest: hidden on screen, the only thing shown in print */
@@ -2093,7 +2101,24 @@ body{background:#fafbfc;}
   .cp-grid,.cp-proj-controls,.cp-actuals-grid{grid-template-columns:1fr;}
   .cp-snap-grid{grid-template-columns:repeat(2,1fr);}
 }
+/* Currency (and any future long-labelled field) spans two settings columns so
+   the native select doesn't clip its option text mid-word. */
+.cp-field.wide{grid-column:span 2;}
+
+/* Bigger tap targets on touch devices only — desktop pointer density unchanged.
+   The small icon buttons (~24px) are fiddly at phone sizes. */
+@media (pointer:coarse){
+  .cp-iconbtn{padding:9px 10px;font-size:16px;}
+  .cp-x{padding:8px 10px;}
+  .cp-x.sm{font-size:18px;padding:8px 10px;}
+  .cp-collapse{padding:9px 10px;}
+  .cp-search-clear{padding:8px;}
+  .cp-toast-close{padding:8px 10px;}
+}
+
 @media(max-width:560px){
+  /* single-column settings grid: a 2-column span would overflow it */
+  .cp-field.wide{grid-column:auto;}
   .cp-root{width:92%;padding:32px 0 48px;}
   .cp-title{font-size:34px;}
   .cp-meta{grid-template-columns:1fr;}

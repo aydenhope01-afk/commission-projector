@@ -8,7 +8,7 @@ const ALLOWED_DOMAIN = "freighttasker.com";
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Jost:wght@300;400;500;600;700;800&display=swap');
 .lgx-root{
-  --navy:#1c3857; --navy-d:#13283f; --blue:#009bd6; --grn:#72c481;
+  --navy:#1c3857; --navy-d:#13283f; --blue:#009bd6; --blue-text:#0077a4; --grn:#72c481;
   --hairline:#d8e0e8; --hairline-faint:#eef2f6; --label:#8595a5; --text-2:#64778a;
   --on-navy-label:#7fa8c9; --on-navy-muted:#9fbdd6; --on-navy-track:#2f4c6e;
   --amber:#d98a2b; --amber-bg:#fcf2e4;
@@ -40,7 +40,7 @@ const CSS = `
 .lgx-tab-dot{width:7px;height:7px;border-radius:50%;background:var(--grn);}
 .lgx-tab span{font-size:11px;font-weight:700;letter-spacing:.12em;}
 .lgx-frame{border:1px solid var(--navy);border-radius:0 3px 3px 3px;background:#fff;padding:34px 34px 30px;}
-.lgx-frame-eyebrow{font-size:12px;font-weight:600;letter-spacing:.16em;color:var(--blue);margin-bottom:8px;}
+.lgx-frame-eyebrow{font-size:12px;font-weight:600;letter-spacing:.16em;color:var(--blue-text);margin-bottom:8px;}
 .lgx-h2{font-size:30px;font-weight:800;color:var(--navy);letter-spacing:-.02em;margin:0 0 8px;}
 .lgx-intro{font-size:14px;color:var(--text-2);line-height:1.5;margin:0 0 26px;}
 .lgx-label{display:block;font-size:11px;font-weight:600;letter-spacing:.14em;color:var(--label);margin-bottom:8px;}
@@ -64,7 +64,7 @@ const CSS = `
 .lgx-note{display:flex;align-items:center;gap:9px;margin-top:18px;padding-top:18px;border-top:1px solid var(--hairline-faint);}
 .lgx-note span{font-size:12.5px;color:var(--text-2);line-height:1.4;}
 .lgx-below{font-size:12.5px;color:var(--label);text-align:center;margin:22px 0 0;line-height:1.5;}
-.lgx-below button{font-family:var(--fb);background:none;border:0;padding:0;color:var(--blue);font-weight:600;font-size:12.5px;cursor:pointer;}
+.lgx-below button{font-family:var(--fb);background:none;border:0;padding:0;color:var(--blue-text);font-weight:600;font-size:12.5px;cursor:pointer;}
 .lgx-below button:hover{text-decoration:underline;}
 
 /* ── sent / confirmation ── */
@@ -74,7 +74,7 @@ const CSS = `
 .lgx-sent p{font-size:14px;color:var(--text-2);line-height:1.55;margin:0 auto 22px;max-width:34ch;}
 .lgx-sent-actions{display:flex;flex-direction:column;gap:12px;align-items:center;}
 .lgx-link{font-family:var(--fb);background:none;border:0;padding:2px 4px;font-size:14px;font-weight:600;cursor:pointer;}
-.lgx-link.azure{color:var(--blue);}
+.lgx-link.azure{color:var(--blue-text);}
 .lgx-link.navy{color:var(--navy);}
 .lgx-link:hover{text-decoration:underline;}
 .lgx-link:focus-visible{outline:none;box-shadow:0 0 0 3px rgba(0,155,214,.35);border-radius:2px;}
