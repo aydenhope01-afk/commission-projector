@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useRef, useCallback } from "react";
+import { useState, useEffect, useMemo, useRef, useCallback, memo } from "react";
 import { supabase } from "./supabaseClient";
 import {
   TYPE_DEFAULTS, TYPES, FREQS, FREQ_MULT, TYPE_COLOR, uid,
@@ -330,30 +330,35 @@ export default function CommissionProjector({ user } = {}) {
     setSettings((s) => ({ ...s, tiers: (Array.isArray(s.tiers) ? s.tiers : []).map((t, j) => (j === i ? { ...t, ...patch } : t)) }));
   const removeTier = (i) =>
     setSettings((s) => ({ ...s, tiers: (Array.isArray(s.tiers) ? s.tiers : []).filter((_, j) => j !== i) }));
-  const removeAccount = (id) => {
-    const idx = accounts.findIndex((x) => x.id === id);
+  // Account-card handlers are wrapped in useCallback with functional updates so
+  // their references stay stable across renders — that's what lets the memoized
+  // AccountCard skip re-rendering untouched cards (typing perf with big books).
+  const removeAccount = useCallback((id) => {
+    // Read via stateRef (kept fresh each render) so this callback needs no deps.
+    const a = stateRef.current ? stateRef.current.accounts : [];
+    const idx = a.findIndex((x) => x.id === id);
     if (idx < 0) return;
-    const removed = accounts[idx];
-    setAccounts((a) => a.filter((x) => x.id !== id));
+    const removed = a[idx];
+    setAccounts((prev) => prev.filter((x) => x.id !== id));
     showToast(`Removed "${removed.name || "account"}"`, {
       actionLabel: "Undo",
-      onAction: () => setAccounts((a) => { const next = a.slice(); next.splice(Math.min(idx, next.length), 0, removed); return next; }),
+      onAction: () => setAccounts((prev) => { const next = prev.slice(); next.splice(Math.min(idx, next.length), 0, removed); return next; }),
     });
-  };
-  const renameAccount = (id, name) => setAccounts((a) => a.map((x) => (x.id === id ? { ...x, name } : x)));
-  const setConfidence = (id, v) =>
-    setAccounts((a) => a.map((x) => (x.id === id ? { ...x, confidence: v === "" ? 100 : Math.max(0, Math.min(100, Number(v))) } : x)));
-  const toggleIncluded = (id) =>
-    setAccounts((a) => a.map((x) => (x.id === id ? { ...x, included: x.included === false } : x)));
-  const duplicateAccount = (id) =>
+  }, [showToast]);
+  const renameAccount = useCallback((id, name) => setAccounts((a) => a.map((x) => (x.id === id ? { ...x, name } : x))), []);
+  const setConfidence = useCallback((id, v) =>
+    setAccounts((a) => a.map((x) => (x.id === id ? { ...x, confidence: v === "" ? 100 : Math.max(0, Math.min(100, Number(v))) } : x))), []);
+  const toggleIncluded = useCallback((id) =>
+    setAccounts((a) => a.map((x) => (x.id === id ? { ...x, included: x.included === false } : x))), []);
+  const duplicateAccount = useCallback((id) =>
     setAccounts((a) => {
       const i = a.findIndex((x) => x.id === id);
       if (i < 0) return a;
       const src = a[i];
       const copy = { ...src, id: uid(), name: src.name + " (copy)", lines: src.lines.map((l) => ({ ...l, id: uid() })) };
       return [...a.slice(0, i + 1), copy, ...a.slice(i + 1)];
-    });
-  const moveAccount = (id, dir) =>
+    }), []);
+  const moveAccount = useCallback((id, dir) =>
     setAccounts((a) => {
       const i = a.findIndex((x) => x.id === id);
       const j = i + dir;
@@ -361,22 +366,22 @@ export default function CommissionProjector({ user } = {}) {
       const next = a.slice();
       [next[i], next[j]] = [next[j], next[i]];
       return next;
-    });
-  const toggleCollapse = (id) =>
-    setCollapsed((c) => { const n = new Set(c); n.has(id) ? n.delete(id) : n.add(id); return n; });
+    }), []);
+  const toggleCollapse = useCallback((id) =>
+    setCollapsed((c) => { const n = new Set(c); n.has(id) ? n.delete(id) : n.add(id); return n; }), []);
   const setAllCollapsed = (val) =>
     setCollapsed(val ? new Set(accounts.map((a) => a.id)) : new Set());
-  const addLine = (id) =>
-    setAccounts((a) => a.map((x) => (x.id === id ? { ...x, lines: [...x.lines, { id: uid(), type: "FCL", freq: "weekly", profit: TYPE_DEFAULTS.FCL }] } : x)));
-  const updateLine = (aid, lid, patch) =>
+  const addLine = useCallback((id) =>
+    setAccounts((a) => a.map((x) => (x.id === id ? { ...x, lines: [...x.lines, { id: uid(), type: "FCL", freq: "weekly", profit: TYPE_DEFAULTS.FCL }] } : x))), []);
+  const updateLine = useCallback((aid, lid, patch) =>
     setAccounts((a) =>
       a.map((x) =>
         x.id === aid
           ? { ...x, lines: x.lines.map((l) => { if (l.id !== lid) return l; const next = { ...l, ...patch }; if (patch.type && patch.type !== l.type) next.profit = TYPE_DEFAULTS[patch.type]; return next; }) }
           : x
       )
-    );
-  const removeLine = (aid, lid) => setAccounts((a) => a.map((x) => (x.id === aid ? { ...x, lines: x.lines.filter((l) => l.id !== lid) } : x)));
+    ), []);
+  const removeLine = useCallback((aid, lid) => setAccounts((a) => a.map((x) => (x.id === aid ? { ...x, lines: x.lines.filter((l) => l.id !== lid) } : x))), []);
   const resetAll = async () => {
     const ok = await ask({ title: "Reset everything?", body: "This clears all accounts and restores default settings.", confirmLabel: "Reset", danger: true });
     if (!ok) return;
@@ -960,57 +965,29 @@ export default function CommissionProjector({ user } = {}) {
                 <div className="cp-empty">No accounts match “{query}”. Press Enter to add it as a new account.</div>
               )}
               {displayAccounts.map((acc) => {
-                const isCollapsed = collapsed.has(acc.id);
-                const excluded = acc.included === false;
-                const conf = acc.confidence == null ? 100 : acc.confidence;
                 const realIdx = accounts.findIndex((x) => x.id === acc.id);
                 return (
-                <div className={"cp-card" + (excluded ? " excluded" : "") + (isCollapsed ? " collapsed" : "")} key={acc.id}>
-                  <div className="cp-card-top">
-                    <button className="cp-collapse" aria-label={isCollapsed ? "Expand account" : "Collapse account"} aria-expanded={!isCollapsed} onClick={() => toggleCollapse(acc.id)}>{isCollapsed ? "▸" : "▾"}</button>
-                    <input className="cp-acc-name" aria-label="Account name" value={acc.name} onChange={(e) => renameAccount(acc.id, e.target.value)} />
-                    <div className="cp-acc-total">
-                      {A$(calc.accTotals[acc.id])}<span>/yr</span>
-                      {conf < 100 && !excluded && <i className="cp-wtag" title="Confidence-weighted">≈ {A$((calc.accTotals[acc.id] || 0) * conf / 100)}</i>}
-                    </div>
-                    <div className="cp-card-actions">
-                      <button className="cp-iconbtn" aria-label="Move account up" title={sorted ? "Switch to Custom order to reorder" : "Move up"} disabled={!!q || sorted || realIdx === 0} onClick={() => moveAccount(acc.id, -1)}>↑</button>
-                      <button className="cp-iconbtn" aria-label="Move account down" title={sorted ? "Switch to Custom order to reorder" : "Move down"} disabled={!!q || sorted || realIdx === accounts.length - 1} onClick={() => moveAccount(acc.id, 1)}>↓</button>
-                      <button className="cp-iconbtn" aria-label="Duplicate account" title="Duplicate" onClick={() => duplicateAccount(acc.id)}>⧉</button>
-                      <button className="cp-x" aria-label="Remove account" title="Remove account" onClick={() => removeAccount(acc.id)}>×</button>
-                    </div>
-                  </div>
-                  <div className="cp-card-meta">
-                    <label className="cp-toggle">
-                      <input type="checkbox" checked={!excluded} onChange={() => toggleIncluded(acc.id)} />
-                      <span>{excluded ? "Excluded — what-if only" : "Included in totals"}</span>
-                    </label>
-                    <div className="cp-conf" role="group" aria-label="Account confidence percent">
-                      <span>Confidence</span>
-                      <input type="range" min="0" max="100" step="5" value={conf} aria-label="Confidence slider" onChange={(e) => setConfidence(acc.id, e.target.value)} />
-                      <input className="cp-conf-num" type="number" min="0" max="100" value={conf} aria-label="Confidence percent" onChange={(e) => setConfidence(acc.id, e.target.value)} />
-                      <em>%</em>
-                    </div>
-                  </div>
-                  {!isCollapsed && (<>
-                  <div className="cp-lines">
-                    {acc.lines.map((ln) => {
-                      const ann = (Number(ln.profit) || 0) * (FREQ_MULT[ln.freq] || 0);
-                      return (
-                        <div className="cp-line" key={ln.id}>
-                          <span className="cp-dot" style={{ background: TYPE_COLOR[ln.type] }} />
-                          <select className="cp-sel type" aria-label="Freight type" value={ln.type} onChange={(e) => updateLine(acc.id, ln.id, { type: e.target.value })}>{TYPES.map((t) => <option key={t}>{t}</option>)}</select>
-                          <select className="cp-sel" aria-label="Shipment frequency" value={ln.freq} onChange={(e) => updateLine(acc.id, ln.id, { freq: e.target.value })}>{FREQS.map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}</select>
-                          <div className="cp-money-in"><span>{CUR.sym}</span><input type="number" aria-label="Profit per shipment" placeholder="0" value={ln.profit ?? ""} onChange={(e) => updateLine(acc.id, ln.id, { profit: e.target.value === "" ? "" : Number(e.target.value) })} onBlur={(e) => { if (e.target.value === "") updateLine(acc.id, ln.id, { profit: 0 }); }} /><em>/shpt</em></div>
-                          <div className="cp-line-ann">{A$(ann)}<span>/yr</span>{ln.freq === "one-off" && <i className="cp-tag">one-off</i>}</div>
-                          <button className="cp-x sm" aria-label="Remove freight line" onClick={() => removeLine(acc.id, ln.id)}>×</button>
-                        </div>
-                      );
-                    })}
-                  </div>
-                  <button className="cp-add-line" onClick={() => addLine(acc.id)}>+ freight line</button>
-                  </>)}
-                </div>
+                  <AccountCard
+                    key={acc.id}
+                    acc={acc}
+                    total={calc.accTotals[acc.id] || 0}
+                    isCollapsed={collapsed.has(acc.id)}
+                    sorted={sorted}
+                    hasQuery={!!q}
+                    isFirst={realIdx === 0}
+                    isLast={realIdx === accounts.length - 1}
+                    currency={settings.currency}
+                    onToggleCollapse={toggleCollapse}
+                    onRename={renameAccount}
+                    onMove={moveAccount}
+                    onDuplicate={duplicateAccount}
+                    onRemove={removeAccount}
+                    onToggleIncluded={toggleIncluded}
+                    onSetConfidence={setConfidence}
+                    onAddLine={addLine}
+                    onUpdateLine={updateLine}
+                    onRemoveLine={removeLine}
+                  />
                 );
               })}
             </section>
@@ -1528,6 +1505,70 @@ export default function CommissionProjector({ user } = {}) {
 }
 
 /* ───────────────────────── small pieces ───────────────────────── */
+/* Memoized account card: with the parent's handlers wrapped in useCallback,
+   only the card whose account object changed re-renders on a keystroke —
+   keeping typing snappy on large books. `currency` isn't read directly; it's a
+   prop so a currency change busts the memo and re-renders formatting (A$/CUR
+   are module singletons refreshed by applyCurrency during the parent render).
+
+   eslint-disable-next-line no-unused-vars -- see `currency` note above */
+const AccountCard = memo(function AccountCard({
+  acc, total, isCollapsed, sorted, hasQuery, isFirst, isLast, currency, // eslint-disable-line no-unused-vars
+  onToggleCollapse, onRename, onMove, onDuplicate, onRemove,
+  onToggleIncluded, onSetConfidence, onAddLine, onUpdateLine, onRemoveLine,
+}) {
+  const excluded = acc.included === false;
+  const conf = acc.confidence == null ? 100 : acc.confidence;
+  return (
+    <div className={"cp-card" + (excluded ? " excluded" : "") + (isCollapsed ? " collapsed" : "")}>
+      <div className="cp-card-top">
+        <button className="cp-collapse" aria-label={isCollapsed ? "Expand account" : "Collapse account"} aria-expanded={!isCollapsed} onClick={() => onToggleCollapse(acc.id)}>{isCollapsed ? "▸" : "▾"}</button>
+        <input className="cp-acc-name" aria-label="Account name" value={acc.name} onChange={(e) => onRename(acc.id, e.target.value)} />
+        <div className="cp-acc-total">
+          {A$(total)}<span>/yr</span>
+          {conf < 100 && !excluded && <i className="cp-wtag" title="Confidence-weighted">≈ {A$(total * conf / 100)}</i>}
+        </div>
+        <div className="cp-card-actions">
+          <button className="cp-iconbtn" aria-label="Move account up" title={sorted ? "Switch to Custom order to reorder" : "Move up"} disabled={hasQuery || sorted || isFirst} onClick={() => onMove(acc.id, -1)}>↑</button>
+          <button className="cp-iconbtn" aria-label="Move account down" title={sorted ? "Switch to Custom order to reorder" : "Move down"} disabled={hasQuery || sorted || isLast} onClick={() => onMove(acc.id, 1)}>↓</button>
+          <button className="cp-iconbtn" aria-label="Duplicate account" title="Duplicate" onClick={() => onDuplicate(acc.id)}>⧉</button>
+          <button className="cp-x" aria-label="Remove account" title="Remove account" onClick={() => onRemove(acc.id)}>×</button>
+        </div>
+      </div>
+      <div className="cp-card-meta">
+        <label className="cp-toggle">
+          <input type="checkbox" checked={!excluded} onChange={() => onToggleIncluded(acc.id)} />
+          <span>{excluded ? "Excluded — what-if only" : "Included in totals"}</span>
+        </label>
+        <div className="cp-conf" role="group" aria-label="Account confidence percent">
+          <span>Confidence</span>
+          <input type="range" min="0" max="100" step="5" value={conf} aria-label="Confidence slider" onChange={(e) => onSetConfidence(acc.id, e.target.value)} />
+          <input className="cp-conf-num" type="number" min="0" max="100" value={conf} aria-label="Confidence percent" onChange={(e) => onSetConfidence(acc.id, e.target.value)} />
+          <em>%</em>
+        </div>
+      </div>
+      {!isCollapsed && (<>
+      <div className="cp-lines">
+        {acc.lines.map((ln) => {
+          const ann = (Number(ln.profit) || 0) * (FREQ_MULT[ln.freq] || 0);
+          return (
+            <div className="cp-line" key={ln.id}>
+              <span className="cp-dot" style={{ background: TYPE_COLOR[ln.type] }} />
+              <select className="cp-sel type" aria-label="Freight type" value={ln.type} onChange={(e) => onUpdateLine(acc.id, ln.id, { type: e.target.value })}>{TYPES.map((t) => <option key={t}>{t}</option>)}</select>
+              <select className="cp-sel" aria-label="Shipment frequency" value={ln.freq} onChange={(e) => onUpdateLine(acc.id, ln.id, { freq: e.target.value })}>{FREQS.map((f) => <option key={f.key} value={f.key}>{f.label}</option>)}</select>
+              <div className="cp-money-in"><span>{CUR.sym}</span><input type="number" aria-label="Profit per shipment" placeholder="0" value={ln.profit ?? ""} onChange={(e) => onUpdateLine(acc.id, ln.id, { profit: e.target.value === "" ? "" : Number(e.target.value) })} onBlur={(e) => { if (e.target.value === "") onUpdateLine(acc.id, ln.id, { profit: 0 }); }} /><em>/shpt</em></div>
+              <div className="cp-line-ann">{A$(ann)}<span>/yr</span>{ln.freq === "one-off" && <i className="cp-tag">one-off</i>}</div>
+              <button className="cp-x sm" aria-label="Remove freight line" onClick={() => onRemoveLine(acc.id, ln.id)}>×</button>
+            </div>
+          );
+        })}
+      </div>
+      <button className="cp-add-line" onClick={() => onAddLine(acc.id)}>+ freight line</button>
+      </>)}
+    </div>
+  );
+});
+
 function Stat({ label, value, sub, accent }) {
   return (
     <div className={"cp-stat" + (accent ? " accent" : "")}>
