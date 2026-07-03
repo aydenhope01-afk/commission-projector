@@ -429,7 +429,15 @@ export default function CommissionProjector({ user } = {}) {
     const rank = new Map(orderIds.map((id, i) => [id, i]));
     return visibleAccounts.slice().sort((a, b) => (rank.get(a.id) ?? 1e9) - (rank.get(b.id) ?? 1e9));
   }, [visibleAccounts, sorted, orderIds]);
-  const quickAdd = () => { const name = query.trim(); if (!name) return; addAccount(name); setQuery(""); };
+  // Enter creates an account only when the search matches nothing — pressing
+  // Enter while filtering existing accounts shouldn't spawn a near-duplicate.
+  // The "+ Add account" button always works regardless.
+  const quickAdd = () => {
+    const name = query.trim();
+    if (!name || visibleAccounts.length > 0) return;
+    addAccount(name);
+    setQuery("");
+  };
   const allCollapsed = accounts.length > 0 && accounts.every((a) => collapsed.has(a.id));
 
   /* target */
@@ -674,6 +682,21 @@ export default function CommissionProjector({ user } = {}) {
 
   const printView = () => { if (typeof window !== "undefined") window.print(); };
 
+  // Recovery path for an expired session: preserve the current in-memory edits
+  // in the local mirror (flagged pending, so the next load prefers them and
+  // re-pushes to Supabase), then sign out WITHOUT clearing the mirror — unlike
+  // the normal Sign out — and let the user request a fresh magic link.
+  const signInAgain = async () => {
+    try {
+      if (user?.id) {
+        writeLocal(user.id, stateRef.current);
+        markPending(user.id, true);
+      }
+    } catch { /* mirror write is best-effort */ }
+    signingOut = true; // block any in-flight debounced save
+    await supabase.auth.signOut();
+  };
+
   // Until the saved state has loaded, render a brief loading state rather than the
   // default/seed data — otherwise returning users see the demo accounts flash for
   // a split second before their real figures arrive.
@@ -699,6 +722,9 @@ export default function CommissionProjector({ user } = {}) {
           <span aria-live="polite" className={"cp-save " + (persisted === "remote" ? "ok" : persisted == null ? "off" : persisted === "auth" ? "err" : "warn")}>
             <i className="cp-save-dot" />{persisted == null || persisted === "remote" ? "Saved" : persisted === "auth" ? "Session expired · sign in again to save" : "Saved offline · will sync when back online"}
           </span>
+          {persisted === "auth" && (
+            <button className="cp-btn" onClick={signInAgain} title="Keeps your unsaved figures on this device and takes you to the sign-in screen">Sign in again</button>
+          )}
           <button className="cp-btn primary" onClick={() => setShowSettings((s) => !s)}>{showSettings ? "Close settings" : "Settings"}</button>
           <button className="cp-btn" onClick={printView}>Manifest PDF</button>
           <button className="cp-btn" onClick={() => signOutClearingMirror()}>Sign out</button>
@@ -937,8 +963,8 @@ export default function CommissionProjector({ user } = {}) {
                 <h2>Accounts <span className="cp-count">{q ? `${visibleAccounts.length}/${accounts.length}` : accounts.length}</span></h2>
                 <div className="cp-acc-tools">
                   <div className="cp-search">
-                    <input aria-label="Search accounts, or type a new name and press Enter to add"
-                      placeholder="Search… (Enter to add)" value={query}
+                    <input aria-label="Search accounts, or type a new name and press Enter to add it when nothing matches"
+                      placeholder="Search or add…" value={query}
                       onChange={(e) => setQuery(e.target.value)}
                       onKeyDown={(e) => { if (e.key === "Enter") { e.preventDefault(); quickAdd(); } }} />
                     {query && <button className="cp-search-clear" aria-label="Clear search" onClick={() => setQuery("")}>×</button>}
