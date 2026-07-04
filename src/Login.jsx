@@ -21,7 +21,7 @@ const CSS = `
 
 /* ── left: navy instrument ── */
 .lgx-left{background:var(--navy);color:#fff;position:relative;overflow:hidden;display:flex;flex-direction:column;justify-content:space-between;padding:48px 56px;}
-.lgx-watermark{position:absolute;right:-130px;top:-120px;width:460px;height:460px;filter:brightness(0) invert(1);opacity:.05;pointer-events:none;transform:translateZ(0);will-change:transform;}
+.lgx-watermark{position:absolute;right:-130px;top:-120px;width:460px;height:460px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='46' fill='none' stroke='%23ffffff' stroke-opacity='0.06' stroke-width='3'/%3E%3Cpath fill='%23ffffff' fill-opacity='0.06' fill-rule='evenodd' d='M50 12 L59.2 40.8 L88 50 L59.2 59.2 L50 88 L40.8 59.2 L12 50 L40.8 40.8 Z M43 50 a7 7 0 1 0 14 0 a7 7 0 1 0 -14 0 Z'/%3E%3C/svg%3E");background-size:contain;background-repeat:no-repeat;pointer-events:none;}
 .lgx-logo{display:flex;align-items:center;gap:11px;position:relative;z-index:1;}
 .lgx-logo span{font-size:23px;font-weight:700;letter-spacing:-.01em;}
 .lgx-logo img{width:31px;height:31px;display:block;filter:brightness(0) invert(1);}
@@ -170,7 +170,7 @@ export default function Login() {
 
         {/* ── left: navy instrument ── */}
         <aside className="lgx-left">
-          <img className="lgx-watermark" src={ICON_SRC} alt="" aria-hidden="true" />
+          <div className="lgx-watermark" aria-hidden="true" />
 
           <div className="lgx-logo">
             <span>Freight</span>

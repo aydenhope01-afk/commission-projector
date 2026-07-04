@@ -1006,7 +1006,7 @@ export default function CommissionProjector({ user } = {}) {
         <div className="cp-tabpanel" role="tabpanel" id="cp-panel-year" aria-labelledby="cp-tab-year" tabIndex={-1}>
           <section className="cp-hero">
             <div className="cp-instr">
-              <img className="cp-instr-mark" src={ICON_SRC} alt="" aria-hidden="true" />
+              <div className="cp-instr-mark" aria-hidden="true" />
               <div className="cp-instr-label">Heading to the commission line</div>
               <Gauge total={calc.totalGP} threshold={calc.threshold} />
               <div className="cp-instr-headline">
@@ -1860,7 +1860,7 @@ body{background:#fafbfc;}
 /* ── hero: instrument + readouts ── */
 .cp-hero{display:grid;grid-template-columns:1.15fr .85fr;border:1px solid var(--navy);border-radius:var(--rf);overflow:hidden;margin-bottom:22px;}
 .cp-instr{background:var(--navy);color:#fff;padding:30px 34px;position:relative;overflow:hidden;border-right:1px solid var(--navy);}
-.cp-instr-mark{position:absolute;right:-50px;top:-50px;width:300px;height:300px;filter:brightness(0) invert(1);opacity:.05;pointer-events:none;transform:translateZ(0);will-change:transform;}
+.cp-instr-mark{position:absolute;right:-50px;top:-50px;width:300px;height:300px;background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ccircle cx='50' cy='50' r='46' fill='none' stroke='%23ffffff' stroke-opacity='0.06' stroke-width='3'/%3E%3Cpath fill='%23ffffff' fill-opacity='0.06' fill-rule='evenodd' d='M50 12 L59.2 40.8 L88 50 L59.2 59.2 L50 88 L40.8 59.2 L12 50 L40.8 40.8 Z M43 50 a7 7 0 1 0 14 0 a7 7 0 1 0 -14 0 Z'/%3E%3C/svg%3E");background-size:contain;background-repeat:no-repeat;pointer-events:none;}
 .cp-instr-label{font-size:12px;font-weight:600;letter-spacing:.16em;text-transform:uppercase;color:var(--on-navy-label);margin-bottom:6px;position:relative;z-index:1;}
 .cp-gauge{display:flex;align-items:center;gap:26px;position:relative;z-index:1;}
 .cp-gauge svg{display:block;flex-shrink:0;}
