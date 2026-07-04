@@ -87,7 +87,7 @@ export function repIdentity(user) {
   return { name: name || "—", email, doc };
 }
 
-export const DEFAULT_SETTINGS = { base: 70000, car: 15000, multiplier: 2.5, rate: 10, target: 0, fiscalYearStart: 7, currency: "AUD", tiers: [] };
+export const DEFAULT_SETTINGS = { base: 70000, car: 15000, multiplier: 2.5, rate: 10, target: 0, fiscalYearStart: 7, currency: "AUD", theme: "auto", tiers: [] };
 // Ensure every accelerator band carries a stable id, so React list keys don't
 // fall back to the array index (which is unstable when bands are removed). Pure:
 // returns a new settings object; tierCommission ignores the id field entirely.

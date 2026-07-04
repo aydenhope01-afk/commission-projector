@@ -296,6 +296,17 @@ export default function CommissionProjector({ user } = {}) {
   const fy = fiscalInfo(settings.fiscalYearStart);
   const rep = repIdentity(user);
 
+  // Apply the chosen theme as a class on <html>: theme-dark forces dark,
+  // theme-light forces light, and no class means auto (follow the system).
+  // Set on <html> so the document background outside .cp-root matches too, and
+  // so the Login screen stays on the chosen theme after a sign-out.
+  useEffect(() => {
+    const cl = document.documentElement.classList;
+    cl.remove("theme-dark", "theme-light");
+    if (settings.theme === "dark") cl.add("theme-dark");
+    else if (settings.theme === "light") cl.add("theme-light");
+  }, [settings.theme]);
+
   // Set when we hydrate from existing data, so the debounced save effect can skip
   // the one upsert that would otherwise re-write the identical state we just loaded.
   const skipNextSave = useRef(false);
@@ -954,6 +965,13 @@ export default function CommissionProjector({ user } = {}) {
           <Field label="Currency" wide>
             <select className="cp-input" value={settings.currency} onChange={(e) => setSettings((s) => ({ ...s, currency: e.target.value }))}>
               {CURRENCIES.map((c) => <option key={c.code} value={c.code}>{c.label}</option>)}
+            </select>
+          </Field>
+          <Field label="Theme">
+            <select className="cp-input" value={settings.theme || "auto"} onChange={(e) => setSettings((s) => ({ ...s, theme: e.target.value }))}>
+              <option value="auto">Auto — match system</option>
+              <option value="light">Light</option>
+              <option value="dark">Dark</option>
             </select>
           </Field>
           <div className="cp-tiers">
@@ -1760,6 +1778,43 @@ function Track({ threshold, total }) {
 }
 
 /* ───────────────────────── styles ───────────────────────── */
+/* Dark theme rules, scope-parameterised so the same set serves both the
+   system preference (auto) and the explicit in-app theme choice. */
+const CP_DARK = (s) => `
+  ${s} body{background:#0d1a26;}
+  ${s} .cp-root{--field:#0d1a26; --backdrop:#0a141d; --card:#152838;
+    --hairline:#2b455c; --hairline-faint:#1e3448; --group-tint:#1b3143;
+    --navy:#d9e6f2; --ink:#e4edf5;
+    --label:#8fa8bd; --text-2:#a8c0d1; --muted:#8fa8bd; --dash:#7e93a6;
+    --caption:#b6cbda; --saved-text:#7ed492; --line:#2b455c;
+    --amber-text:#e8a656; --danger:#ef7b62;
+    --blue-text:#4fc3ea; --grn-d:#6cc481;}
+  ${s} .cp-instr{background:#1c3857;}
+  ${s} .cp-skel-box.navy{background:#1c3857;}
+  ${s} .cp-btn.primary{background:#2b4a6b;border-color:#2b4a6b;}
+  ${s} .cp-btn.primary:hover{background:#35587e;}
+  ${s} .cp-tabs button.on{background:#2b4a6b;color:#fff;}
+  ${s} .cp-status{background:#2b4a6b;}
+  ${s} .cp-status.above{background:var(--grn);color:#12263a;}
+  ${s} .cp-linechip{color:#12263a;}
+  ${s} .cp-years button.on{background:#2b4a6b;border-color:#2b4a6b;color:#fff;}
+  ${s} .cp-years button.on .cp-years-now{color:#12263a;}
+  ${s} .cp-toast{background:#223c55;}
+  ${s} .cp-ledger thead th{background:#223c55;}
+  ${s} .cp-ledger thead th.cur{background:#2b4a6b;}
+  ${s} .cp-fill.navy{background:#5d87b3;}
+  ${s} .cp-cmp-row.live .cp-cmp-bar{background:#5d87b3;}
+  ${s} .cp-bar-carried{background:#35587e;}
+  ${s} .cp-bar-thr i{color:#7ed492;}
+  ${s} .cp-header{border-bottom-color:#2b455c;}
+  ${s} .cp-meta,${s} .cp-hero{border-color:#2b455c;}
+  ${s} .cp-nudge{background:#33280f;border-color:#8a6a2f;}
+  ${s} .cp-modal-backdrop{background:rgba(0,0,0,.6);}
+  ${s} .ft-logo-img,${s} .ft-foot-img{filter:brightness(0) invert(1);opacity:.92;}
+  ${s} .cp-stat.accent{background:#1c3857;border-right-color:#1c3857;}
+  ${s} .cp-chips button.on{background:#2b4a6b;border-color:#2b4a6b;}
+`;
+
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Jost:wght@300;400;500;600;700;800&display=swap');
 body{background:#fafbfc;}
@@ -2285,42 +2340,6 @@ body{background:#fafbfc;}
    ink in the light theme; here it becomes light ink, and the handful of
    navy-as-surface elements are re-asserted below. Print stays light (see the
    token re-assert inside @media print). */
-@media screen and (prefers-color-scheme: dark){
-  body{background:#0d1a26;}
-  .cp-root{
-    --field:#0d1a26; --backdrop:#0a141d; --card:#152838;
-    --hairline:#2b455c; --hairline-faint:#1e3448; --group-tint:#1b3143;
-    --navy:#d9e6f2; --ink:#e4edf5;
-    --label:#8fa8bd; --text-2:#a8c0d1; --muted:#8fa8bd; --dash:#7e93a6;
-    --caption:#b6cbda; --saved-text:#7ed492; --line:#2b455c;
-    --amber-text:#e8a656; --danger:#ef7b62;
-    --blue-text:#4fc3ea; --grn-d:#6cc481;
-  }
-  /* navy-as-surface, re-asserted (—-navy is now light ink) */
-  .cp-instr{background:#1c3857;}
-  .cp-skel-box.navy{background:#1c3857;}
-  .cp-btn.primary{background:#2b4a6b;border-color:#2b4a6b;}
-  .cp-btn.primary:hover{background:#35587e;}
-  .cp-tabs button.on{background:#2b4a6b;color:#fff;}
-  .cp-status{background:#2b4a6b;}
-  .cp-status.above{background:var(--grn);color:#12263a;}
-  .cp-linechip{color:#12263a;}
-  .cp-years button.on{background:#2b4a6b;border-color:#2b4a6b;color:#fff;}
-  .cp-years button.on .cp-years-now{color:#12263a;}
-  .cp-toast{background:#223c55;}
-  .cp-ledger thead th{background:#223c55;}
-  .cp-ledger thead th.cur{background:#2b4a6b;}
-  .cp-fill.navy{background:#5d87b3;}
-  .cp-cmp-row.live .cp-cmp-bar{background:#5d87b3;}
-  .cp-bar-carried{background:#35587e;}
-  .cp-bar-thr i{color:#7ed492;}
-  .cp-header{border-bottom-color:#2b455c;}
-  .cp-meta,.cp-hero{border-color:#2b455c;}
-  .cp-nudge{background:#33280f;border-color:#8a6a2f;}
-  .cp-modal-backdrop{background:rgba(0,0,0,.6);}
-  /* the compass mark is navy-on-transparent — invert it on dark surfaces */
-  .ft-logo-img,.ft-foot-img{filter:brightness(0) invert(1);opacity:.92;}
-  .cp-stat.accent{background:#1c3857;border-right-color:#1c3857;}
-  .cp-chips button.on{background:#2b4a6b;border-color:#2b4a6b;}
-}
+@media screen and (prefers-color-scheme: dark){${CP_DARK("html:not(.theme-light)")}}
+@media screen{${CP_DARK("html.theme-dark")}}
 `;

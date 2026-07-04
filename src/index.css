@@ -8,8 +8,16 @@ html, body {
   min-height: 100vh;
 }
 
-@media (prefers-color-scheme: dark) {
-  html, body {
+/* Dark document background: follows the system unless the in-app theme choice
+   (html.theme-light / html.theme-dark) overrides it. Screen-only so printing
+   stays on white paper. */
+@media screen and (prefers-color-scheme: dark) {
+  html:not(.theme-light), html:not(.theme-light) body {
+    background: #0d1a26;
+  }
+}
+@media screen {
+  html.theme-dark, html.theme-dark body {
     background: #0d1a26;
   }
 }

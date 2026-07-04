@@ -5,6 +5,27 @@ const ICON_SRC = "/ft-icon.png";
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const ALLOWED_DOMAIN = "freighttasker.com";
 
+/* Dark theme rules, scope-parameterised so the same set serves both the
+   system preference (auto) and the explicit in-app theme choice. */
+const LGX_DARK = (s) => `
+  ${s} .lgx-grid{background:#0d1a26;}
+  ${s} .lgx-frame{background:#152838;border-color:#3a5a7d;}
+  ${s} .lgx-tab{border-color:#3a5a7d;}
+  ${s} .lgx-h2,${s} .lgx-sent h2{color:#e4edf5;}
+  ${s} .lgx-intro,${s} .lgx-note span,${s} .lgx-sent p{color:#a8c0d1;}
+  ${s} .lgx-label{color:#8fa8bd;}
+  ${s} .lgx-field{background:#0f2231;border-color:#2b455c;}
+  ${s} .lgx-field input{color:#e4edf5;}
+  ${s} .lgx-root input::placeholder{color:#5f7890;}
+  ${s} .lgx-btn{background:#2b4a6b;border-color:#2b4a6b;}
+  ${s} .lgx-btn:hover:not(:disabled){background:#35587e;}
+  ${s} .lgx-below{color:#8fa8bd;}
+  ${s} .lgx-link.navy{color:#d9e6f2;}
+  ${s} .lgx-help.amber,${s} .lgx-errbox span{color:#e8a656;}
+  ${s} .lgx-errbox{background:#33280f;border-color:#8a6a2f;}
+  ${s} .lgx-note{border-top-color:#1e3448;}
+`;
+
 const CSS = `
 @import url('https://fonts.googleapis.com/css2?family=Jost:wght@300;400;500;600;700;800&display=swap');
 .lgx-root{
@@ -96,24 +117,8 @@ const CSS = `
 }
 
 /* ── dark mode (matches the app shell) ── */
-@media screen and (prefers-color-scheme: dark){
-  .lgx-grid{background:#0d1a26;}
-  .lgx-frame{background:#152838;border-color:#3a5a7d;}
-  .lgx-tab{border-color:#3a5a7d;}
-  .lgx-h2,.lgx-sent h2{color:#e4edf5;}
-  .lgx-intro,.lgx-note span,.lgx-sent p{color:#a8c0d1;}
-  .lgx-label{color:#8fa8bd;}
-  .lgx-field{background:#0f2231;border-color:#2b455c;}
-  .lgx-field input{color:#e4edf5;}
-  .lgx-root input::placeholder{color:#5f7890;}
-  .lgx-btn{background:#2b4a6b;border-color:#2b4a6b;}
-  .lgx-btn:hover:not(:disabled){background:#35587e;}
-  .lgx-below{color:#8fa8bd;}
-  .lgx-link.navy{color:#d9e6f2;}
-  .lgx-help.amber,.lgx-errbox span{color:#e8a656;}
-  .lgx-errbox{background:#33280f;border-color:#8a6a2f;}
-  .lgx-note{border-top-color:#1e3448;}
-}
+@media screen and (prefers-color-scheme: dark){${LGX_DARK("html:not(.theme-light)")}}
+@media screen{${LGX_DARK("html.theme-dark")}}
 `;
 
 export default function Login() {
